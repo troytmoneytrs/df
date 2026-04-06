@@ -1,9 +1,9 @@
-name: Compile UAC Method 59 (Single C File - Fresh Build)
+name: Compile UAC Method 59 (Single C File - Fixed VC Env)
 
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:   # Manual trigger button
+  workflow_dispatch:
 
 jobs:
   compile:
@@ -13,15 +13,16 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup MSBuild (enables cl.exe from Visual Studio 2022)
+    - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
 
-    - name: Compile uac_method59.c to exe (minimal flags for smaller signature)
+    - name: Setup Visual Studio Compiler Environment (vcvars64.bat)
       shell: cmd
       run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
         cl /O2 /MT /EHsc /Fe:uac_method59.exe uac_method59.c
 
-    - name: Upload fresh uac_method59.exe artifact
+    - name: Upload fresh uac_method59.exe
       uses: actions/upload-artifact@v4
       with:
         name: uac_method59-exe
