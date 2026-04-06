@@ -1,0 +1,41 @@
+name: Build UACME Akagi64 (Full Solution - Fixed for 2026)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:   # Allows manual trigger
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout UACME source
+      uses: actions/checkout@v4
+
+    - name: Setup MSBuild (VS 2022)
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Retarget to v143 and fix include paths
+      shell: pwsh
+      run: |
+        Write-Host "Retargeting projects from v145 to v143..."
+        Get-ChildItem -Path Source -Recurse -Filter *.vcxproj | ForEach-Object {
+          (Get-Content $_.FullName) -replace 'v145', 'v143' | Set-Content $_.FullName
+          Write-Host "Retargeted: $($_.Name)"
+        }
+        
+        Write-Host "Fixing include paths (shared → Shared)..."
+        Get-ChildItem -Path Source -Recurse -Filter *.c | ForEach-Object {
+          (Get-Content $_.FullName) -replace 'shared\\shared\.h', 'Shared\\shared.h' | Set-Content $_.FullName
+        }
+
+    - name: Build FULL UACME Solution (correct order + includes)
+      run: msbuild Source\uacme.sln -t:Build -p:Configuration=Release -p:Platform=x64 -p:PlatformToolset=v143 -verbosity:minimal
+
+    - name: Upload compiled Akagi64.exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: UACME-Akagi64-Compiled
+        path: Source\Akagi\output\x64\Release\Akagi64.exe
+        if-no-files-found: error
