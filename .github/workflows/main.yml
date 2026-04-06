@@ -1,4 +1,4 @@
-name: Compile UAC Method 59 (Single C File - Fixed VC Env)
+name: Compile UAC Method 59 (Fixed Linking)
 
 on:
   push:
@@ -16,11 +16,11 @@ jobs:
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
 
-    - name: Setup Visual Studio Compiler Environment (vcvars64.bat)
+    - name: Setup Visual Studio Compiler Environment + Compile with libraries
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl /O2 /MT /EHsc /Fe:uac_method59.exe uac_method59.c
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" > nul
+        cl /O2 /MT /EHsc /Fe:uac_method59.exe uac_method59.c /link advapi32.lib shell32.lib
 
     - name: Upload fresh uac_method59.exe
       uses: actions/upload-artifact@v4
