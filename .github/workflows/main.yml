@@ -10,21 +10,21 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v2
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
-    - name: Setup Visual Studio Compiler Environment + Compile with libraries
-      shell: cmd
-      run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" > nul
-        cl /O2 /MT /EHsc /Fe:uac_method59.exe uac_method59.c /link advapi32.lib shell32.lib
+      - name: Setup Visual Studio Compiler Environment + Compile with libraries
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" > nul
+          cl /O2 /MT /EHsc /Fe:uac_method59.exe uac_method59.c /link ole32.lib shell32.lib advapi32.lib
 
-    - name: Upload fresh uac_method59.exe
-      uses: actions/upload-artifact@v4
-      with:
-        name: uac_method59-exe
-        path: uac_method59.exe
-        if-no-files-found: error
+      - name: Upload fresh uac_method59.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: uac_method59-exe
+          path: uac_method59.exe
+          if-no-files-found: error
