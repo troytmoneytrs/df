@@ -1,4 +1,4 @@
-name: Compile UAC Method 59 (PEB Masquerade)
+name: Compile UAC Method 34 (25H2 Compatible)
 
 on:
   push:
@@ -16,15 +16,15 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Compile with PEB Masquerade
+      - name: Compile Method 34
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" > nul
-          cl /O2 /MT /EHsc /Fe:uac_method59.exe uac_method59.c /link ole32.lib shell32.lib advapi32.lib
+          cl /O2 /MT /EHsc /Fe:uac_method34.exe uac_method34.c /link ole32.lib shell32.lib advapi32.lib
 
-      - name: Upload fresh uac_method59.exe
+      - name: Upload fresh uac_method34.exe
         uses: actions/upload-artifact@v4
         with:
-          name: uac_method59-exe
-          path: uac_method59.exe
+          name: uac_method34-exe
+          path: uac_method34.exe
           if-no-files-found: error
