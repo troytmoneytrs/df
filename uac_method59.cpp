@@ -757,7 +757,7 @@ int main()
         printf("Something went wrong.\n");
         return 1;
     }
-    printf("The red sun shall prevail.\n");
+    printf("The red sun shall prevaidl.\n");
     
     CloseHandle(hlk);
     CloseHandle(hrp);
